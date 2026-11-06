@@ -23,6 +23,11 @@ export async function decodeConfigResponse(
   // 非 JSON → 用 Latin-1 解码保留所有字节（用于二进制标记检测）
   const text = new TextDecoder('latin1').decode(buffer);
 
+  // AES 分支只接受纯 hex/Base64；去掉响应里可能带的换行和空格。
+  // 4567 的 convertResult 会先把 \r/\n 换成空格，toBytes 再按整除丢弃尾部，
+  // 这里显式去掉全部空白，效果一致且不会让尾部换行参与 length 计算。
+  const compact = text.replace(/\s+/g, '');
+
   // 格式 1：图片伪装 + Base64（[A-Za-z0]{8}** 标记）
   const imageDecoded = decodeImageWrapped(text);
   if (imageDecoded !== null) {
@@ -31,9 +36,9 @@ export async function decodeConfigResponse(
   }
 
   // 格式 2：AES CBC 自解密（2423 前缀）
-  if (text.startsWith('2423')) {
+  if (compact.startsWith('2423')) {
     try {
-      const cbcResult = await decryptAesCbc(text);
+      const cbcResult = await decryptAesCbc(compact);
       if (cbcResult !== null) {
         console.log('[decoder] Decoded AES CBC config');
         return cbcResult;
@@ -46,7 +51,7 @@ export async function decodeConfigResponse(
   // 格式 3：AES ECB 外部密钥
   if (configKey && !isJson(text)) {
     try {
-      const ecbResult = await decryptAesEcb(text, configKey);
+      const ecbResult = await decryptAesEcb(compact, configKey);
       if (ecbResult !== null) {
         console.log('[decoder] Decoded AES ECB config');
         return ecbResult;
@@ -70,9 +75,10 @@ function decodeImageWrapped(text: string): string | null {
   const match = marker.exec(text);
   if (!match) return null;
 
-  // 标记本身 10 字符（8 字符 + "**"），跳过标记取后面的 base64
+  // 标记本身 10 字符（8 字符 + "**"），跳过标记取后面的 base64。
+  // 有些源站会把 base64 按行折行，先去掉所有空白再解码。
   const base64Start = match.index + 10;
-  const base64Data = text.substring(base64Start).trim();
+  const base64Data = text.substring(base64Start).replace(/\s+/g, '');
   if (!base64Data) return null;
 
   try {
@@ -186,7 +192,9 @@ async function decryptAesEcb(hexContent: string, key: string): Promise<string | 
  * 移植自 AES.rightPadding()
  */
 function rightPadding(str: string, pad: string, length: number): string {
-  let result = str;
+  // 与 4567 的 rightPadding 一致：先 trim，避免响应尾部的 \n/\r 被当成
+  // key/iv 的一部分（nf 的 2423 载荷就是尾部带换行）。
+  let result = str.trim();
   while (result.length < length) {
     result += pad;
   }
@@ -198,9 +206,13 @@ function rightPadding(str: string, pad: string, length: number): string {
  * 移植自 AES.toBytes()
  */
 function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  // 与 4567 的 toBytes 一致：按 length/2 向下取整，奇数长度时丢弃最后一个
+  // 不完整的 hex 字符；调用方已去掉空白，这里再兜底。
+  const length = Math.floor(hex.length / 2);
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    const byte = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+    bytes[i] = Number.isNaN(byte) ? 0 : byte;
   }
   return bytes;
 }
@@ -209,9 +221,11 @@ function hexToBytes(hex: string): Uint8Array {
  * Hex 字符串 → 普通字符串（每 2 个 hex 字符 → 1 个 char）
  */
 function hexToString(hex: string): string {
+  // 与 hexToBytes 一致，奇数长度时不把最后一个不完整字符转成 \u0000。
   let str = '';
-  for (let i = 0; i < hex.length; i += 2) {
-    str += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16));
+  const length = Math.floor(hex.length / 2);
+  for (let i = 0; i < length; i++) {
+    str += String.fromCharCode(parseInt(hex.substring(i * 2, i * 2 + 2), 16));
   }
   return str;
 }

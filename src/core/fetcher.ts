@@ -301,9 +301,18 @@ export function parseConfigJson(text: string): TVBoxConfig | null {
   let parsed = tryParseJson(cleaned);
 
   // 如果失败，尝试去掉行尾注释后再解析（只去掉不在字符串内的 // 注释）
+  let stripped = cleaned;
   if (!parsed) {
-    const stripped = stripJsonComments(cleaned);
+    stripped = stripJsonComments(cleaned);
     parsed = tryParseJson(stripped);
+  }
+
+  // 仍然失败：按 4567 的 convertResult 做最后一级清洗。
+  // 4567 在 Jackson 解析前会去掉 # 注释行、把裸 CR/LF 替换成空格；
+  // 这能修复字符串内部含裸换行的配置（严格 JSON 不允许）。
+  // 只在前面都失败时执行，避免改动合法配置的字符串内容。
+  if (!parsed) {
+    parsed = tryParseJson(repairJsonText(stripped));
   }
 
   if (!parsed) return null;
@@ -320,6 +329,29 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 最后一级 JSON 修复，对齐 4567 的 SubscriptionService.convertResult：
+ * - 去掉 # 开头的注释行；
+ * - 把裸 CR/LF 替换成空格（JSON 结构里本来就是空白；字符串里的裸换行
+ *   在严格 JSON 中非法，4567 也是用空格替换后交给 Jackson）；
+ * - 去掉 JSON 前面的非 JSON 文本。
+ * 只在严格解析和去 // 注释后都失败时使用，避免改动合法配置的字符串内容。
+ */
+function repairJsonText(text: string): string {
+  let repaired = text.replace(/^\s*#.*$/gm, '');
+  repaired = repaired.replace(/\r\n?|\n/g, ' ');
+
+  const firstBrace = repaired.indexOf('{');
+  const firstBracket = repaired.indexOf('[');
+  const candidates = [firstBrace, firstBracket].filter((index) => index >= 0);
+  if (candidates.length > 0) {
+    const start = Math.min(...candidates);
+    if (start > 0) repaired = repaired.slice(start);
+  }
+
+  return repaired;
 }
 
 /**

@@ -3,6 +3,7 @@
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite } from './core/types';
 import { fetchConfigs } from './core/fetcher';
+import { saveSourceCaches, restoreSourceCaches } from './core/source-cache';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
@@ -182,9 +183,30 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     }
   }
   const { configs: sourcedConfigs, fetchResults } = await fetchConfigs(remoteSources, config.fetchTimeoutMs, proxyConfig);
+
+  // 单源 last-good 缓存：成功的源落盘，失败的源用最后一次成功配置顶替。
+  // 这样 fty4 这类偶发超时的直连源不会在下一次 refresh 中丢站点。
+  const savedCacheCount = await saveSourceCaches(storage, sourcedConfigs);
+  if (savedCacheCount > 0) {
+    logger.infoFields('aggregation', 'source-cache-saved', { count: savedCacheCount });
+  }
+
+  const succeededUrls = new Set(sourcedConfigs.map((config) => config.sourceUrl));
+  const { configs: cachedConfigs, hits: cacheHits } = await restoreSourceCaches(storage, fetchResults, succeededUrls);
+  if (cachedConfigs.length > 0) {
+    sourcedConfigs.push(...cachedConfigs);
+    for (const hit of cacheHits) {
+      logger.infoFields('aggregation', 'source-cache-hit', {
+        url: hit.url,
+        name: hit.name,
+        ageHours: Math.round(hit.ageMs / 3_600_000),
+      });
+    }
+  }
+
   logFetchResults = fetchResults;
 
-  // 更新源健康状态
+  // 更新源健康状态（fetchResults 的 errorMessage 已带缓存命中说明）
   await updateSourceHealth(storage, fetchResults);
 
   if (sourcedConfigs.length === 0 && inlineConfigs.length === 0 && macCMSConfigs.length === 0) {

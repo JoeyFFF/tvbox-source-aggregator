@@ -2,6 +2,7 @@
 
 import { DEFAULT_FETCH_TIMEOUT_MS, TVBOX_UA, BROWSER_UA } from './config';
 import { decodeConfigResponse } from './decoder';
+import { isGitHubReleaseSource, prepareGitHubReleaseSource } from './zip-source';
 import type { TVBoxConfig, SourcedConfig, SourceEntry, SourceFetchResult } from './types';
 
 const MAX_MULTI_REPO_DEPTH = 3; // 多仓最大展开深度
@@ -124,6 +125,37 @@ async function fetchSingleConfig(
   timeoutMs: number,
   proxyConfig?: FetchProxyConfig,
 ): Promise<SingleFetchResult> {
+  // GitHub Release ZIP 源：/refresh 时解析 latest release、下载并展开 ZIP。
+  // 相对路径已经改成 {{BASE_URL}}/zip/<key>/...，由 Node 路由提供 JAR/资源。
+  if (isGitHubReleaseSource(source.url)) {
+    const startedAt = Date.now();
+    try {
+      const prepared = await prepareGitHubReleaseSource(source.url);
+      const config = parseConfigJson(prepared.text);
+      if (!config) {
+        return {
+          config: null,
+          fetchResult: { url: source.url, name: source.name, status: 'parse_error', errorMessage: 'Invalid JSON in release ZIP' },
+        };
+      }
+      return {
+        config,
+        fetchResult: { url: source.url, name: source.name, status: 'ok', speedMs: Date.now() - startedAt },
+      };
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const status = msg.includes('abort')
+        ? 'timeout'
+        : /No TVBox config|Invalid JSON in release ZIP/.test(msg)
+          ? 'parse_error'
+          : 'network_error';
+      return {
+        config: null,
+        fetchResult: { url: source.url, name: source.name, status, errorMessage: msg },
+      };
+    }
+  }
+
   // 双 UA 回退：先用 okhttp（TVBox 原生），解析失败换浏览器 UA 重试
   const result = await fetchWithUA(source, timeoutMs, TVBOX_UA);
   if (result.config) return result;

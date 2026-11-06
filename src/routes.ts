@@ -1081,6 +1081,56 @@ export function createApp(deps: AppDeps): Hono {
 
       return c.json({ error: 'JAR unavailable from origin' }, 502);
     });
+
+    // GitHub Release ZIP 源：提供解压后的 JAR / JSON / JS 等相对资源
+    app.get('/zip/:key/*', async (c) => {
+      const key = c.req.param('key');
+      if (!/^[0-9a-f]{16}$/i.test(key)) {
+        return c.json({ error: 'Invalid ZIP key' }, 400);
+      }
+
+      const marker = `/zip/${key}/`;
+      const markerIndex = c.req.path.indexOf(marker);
+      let relative = markerIndex >= 0 ? c.req.path.substring(markerIndex + marker.length) : '';
+      try {
+        relative = decodeURIComponent(relative);
+      } catch {
+        return c.json({ error: 'Invalid path' }, 400);
+      }
+      if (!relative || relative.includes('\0')) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+
+      const zipRoot = pathMod.resolve(
+        process.env.DATA_DIR || pathMod.join(process.cwd(), 'data'),
+        'zip',
+        key,
+      );
+      const filePath = pathMod.resolve(zipRoot, relative);
+      if (!filePath.startsWith(zipRoot + pathMod.sep)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+
+      const ext = pathMod.extname(filePath).toLowerCase();
+      const contentTypes: Record<string, string> = {
+        '.jar': 'application/java-archive',
+        '.json': 'application/json; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.txt': 'text/plain; charset=utf-8',
+        '.m3u': 'audio/x-mpegurl',
+        '.gz': 'application/gzip',
+      };
+      return new Response(fs.readFileSync(filePath), {
+        headers: {
+          'Content-Type': contentTypes[ext] || 'application/octet-stream',
+          'Cache-Control': 'public, max-age=300',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    });
   }
 
   // ─── 直播源代理（仅 CF 版）──────────────────────────────

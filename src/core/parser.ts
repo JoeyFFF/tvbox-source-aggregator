@@ -232,7 +232,9 @@ export function extractSpiderJarUrl(spider: string | undefined): string | null {
     url = url.substring(4);
   }
 
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+  // ZIP 源会把相对 JAR 改写成 {{BASE_URL}}/zip/<key>/...，
+  // 这里把它视作绝对 URL，让合并阶段能正常分配全局 spider / 站点 jar。
+  if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('{{BASE_URL}}')) {
     return null;
   }
 

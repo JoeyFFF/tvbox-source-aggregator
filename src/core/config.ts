@@ -81,6 +81,8 @@ export const KV_DEDUP_CONFIG = 'dedup_config';
 export const KV_LIVE_DISABLED = 'live_disabled';
 // 直播合并模式：'separated'（按源分类）| 'merged'（全部合并）
 export const KV_LIVE_MERGE_MODE = 'live_merge_mode';
+// 直播源正则黑名单（url/source/name/group），在直播解析后、合并前应用
+export const KV_LIVE_URL_BLACKLIST = 'live_url_blacklist';
 
 // 智能 Base URL
 export const BASE_URL_PLACEHOLDER = '{{BASE_URL}}';

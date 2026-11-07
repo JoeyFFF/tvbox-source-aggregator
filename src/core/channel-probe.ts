@@ -14,6 +14,7 @@ import {
   TVBOX_UA,
 } from './config';
 import { extractAllUrls } from './live-merger';
+import { cleanPlaybackUrl } from './live-mirrors';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -233,7 +234,7 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     return status;
   }
 
-  const urls = extractAllUrls(groups);
+  const urls = extractAllUrls(groups).map(cleanPlaybackUrl);
   const totalChannels = groups.reduce((n, g) => n + g.channels.length, 0);
 
   if (urls.length === 0) {

@@ -277,6 +277,8 @@ ${sharedStyles}
     <nav class="header-nav">
       <a href="/admin/config-editor" data-i18n="navConfigEditor">Config Editor</a>
       <a href="/builder">Builder</a>
+      <a href="/group-builder">直播分组</a>
+      <a href="/admin/live-url-blacklist">直播源黑名单</a>
       <a href="/status" data-i18n="navDashboard">Dashboard</a>
     </nav>
     <!-- Aggregation status bar -->

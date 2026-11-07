@@ -23,6 +23,7 @@ import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, 
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, fetchAndParseLiveUrls } from './core/live-merger';
+import { loadLiveUrlBlacklist } from './core/live-url-blacklist';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 
@@ -162,7 +163,7 @@ export function createApp(deps: AppDeps): Hono {
         }
         if (liveUrls.length > 0) {
           try {
-            const groups = await fetchAndParseLiveUrls(liveUrls, 8000);
+            const groups = await fetchAndParseLiveUrls(liveUrls, 8000, await loadLiveUrlBlacklist(storage));
             if (groups.length > 0) {
               return c.body(formatLiveGroupsAsTxt(groups), 200, {
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -1902,6 +1903,12 @@ export function createApp(deps: AppDeps): Hono {
   if (deps.enableBuilder) {
     import('./routes/builder').then(({ mountBuilderRoutes }) => {
       mountBuilderRoutes(app, { storage, config });
+    });
+    import('./routes/live-group-builder').then(({ mountLiveGroupBuilderRoutes }) => {
+      mountLiveGroupBuilderRoutes(app, { storage, config });
+    });
+    import('./routes/live-url-blacklist').then(({ mountLiveUrlBlacklistRoutes }) => {
+      mountLiveUrlBlacklistRoutes(app, { storage, config });
     });
   }
 

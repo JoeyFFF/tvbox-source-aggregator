@@ -341,6 +341,8 @@ ${sharedStyles}
       <a href="/admin" data-i18n="navAdmin">Admin</a>
       <a href="/admin/config-editor" data-i18n="navConfigEditor">Config Editor</a>
       <a href="/builder">Builder</a>
+      <a href="/group-builder">直播分组</a>
+      <a href="/admin/live-url-blacklist">直播源黑名单</a>
     </nav>
   </header>
 

@@ -9,6 +9,9 @@ import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type Sit
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
+import { groupLiveSourceMirrors } from './core/live-mirrors';
+import { parseLiveGroupRules, KV_LIVE_GROUP_RULES, KV_LIVE_GROUP_SNAPSHOT } from './core/live-group-rules';
+import { loadLiveUrlBlacklist } from './core/live-url-blacklist';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
@@ -435,33 +438,42 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
     // URL 去重
     const seen = new Set<string>();
-    const uniqueInputs = liveInputs.filter((i) => {
+    const exactInputs = liveInputs.filter((i) => {
       if (seen.has(i.url)) return false;
       seen.add(i.url);
       return true;
     });
+    // 已过滤的候选中保留镜像回退；直连优先，成功只汇入一份列表。
+    const liveGroups = groupLiveSourceMirrors(exactInputs);
+    logger.infoFields('aggregation', 'Step 6.5: live-mirror-groups', { exact: exactInputs.length, logical: liveGroups.length });
 
-    if (uniqueInputs.length === 0) {
+    if (liveGroups.length === 0) {
       logger.info('aggregation', 'Step 6.5: No live sources to merge');
       merged.lives = [];
     } else {
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-      logger.infoFields('aggregation', 'Step 6.5: live-sources', { unique: uniqueInputs.length, mode: liveMergeMode });
+      logger.infoFields('aggregation', 'Step 6.5: live-sources', { unique: exactInputs.length, logical: liveGroups.length, mode: liveMergeMode });
+      const liveUrlBlacklist = await loadLiveUrlBlacklist(storage);
+      logger.infoFields('aggregation', 'Step 6.5: live-url-blacklist', { rules: liveUrlBlacklist.rules.length });
 
       let mergeResult;
       if (liveMergeMode === 'separated') {
-        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs);
+        mergeResult = await separatedMergeLives(liveGroups, config.fetchTimeoutMs, liveUrlBlacklist);
       } else {
         const channelSpeedMap = await loadChannelSpeedMap(storage);
-        mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
+        const groupRules = parseLiveGroupRules(await storage.get(KV_LIVE_GROUP_RULES));
+        mergeResult = await mergeLivesToNative(liveGroups, config.fetchTimeoutMs, channelSpeedMap, groupRules, liveUrlBlacklist);
       }
       merged.lives = mergeResult.groups;
 
-      // 保存合并树供 channel-probe 使用
+      // 保存合并树供 channel-probe 使用；保存源组快照供分组 Builder 预览
       await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+      if (mergeResult.groupSnapshot) {
+        await storage.put(KV_LIVE_GROUP_SNAPSHOT, JSON.stringify(mergeResult.groupSnapshot));
+      }
 
       logger.infoFields('aggregation', 'live-merge-done', {
-        downloaded: mergeResult.sourcesDownloaded, total: uniqueInputs.length,
+        downloaded: mergeResult.sourcesDownloaded, total: liveGroups.length,
         groups: mergeResult.groups.length, channels: mergeResult.totalChannels, urls: mergeResult.totalUrls,
       });
     }

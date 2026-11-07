@@ -275,6 +275,8 @@ ${sharedStyles}
     <div class="header-nav">
       <a href="/admin" data-i18n="navAdmin">Admin</a>
       <a href="/builder">Builder</a>
+      <a href="/group-builder">直播分组</a>
+      <a href="/admin/live-url-blacklist">直播源黑名单</a>
       <a href="/status" data-i18n="navDashboard">Dashboard</a>
     </div>
   </header>
@@ -307,6 +309,11 @@ ${sharedStyles}
 
   <!-- Lives panel -->
   <div class="tab-panel" id="panelLives">
+    <div style="margin-bottom:12px;padding:9px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-dim);font-size:0.8rem;line-height:1.6">
+      这里的「屏蔽」只作用于直播列表入口 URL，不会屏蔽列表内的单条播放地址或主机。
+      需要按播放地址、直播源名、频道名或原始分组过滤时，请打开
+      <a href="/admin/live-url-blacklist" style="color:var(--green)">直播源正则黑名单</a>。
+    </div>
     <div class="loading-msg" id="loadingLives" data-i18n="loading">加载中...</div>
   </div>
 

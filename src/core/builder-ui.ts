@@ -344,6 +344,7 @@ ${sharedStyles}
     <div class="header-nav">
       <a href="/admin">管理</a>
       <a href="/config-editor">编辑器</a>
+      <a href="/group-builder">直播分组</a>
       <a href="/status">仪表盘</a>
     </div>
   </header>

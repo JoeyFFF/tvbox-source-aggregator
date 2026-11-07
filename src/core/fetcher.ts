@@ -3,6 +3,7 @@
 import { DEFAULT_FETCH_TIMEOUT_MS, TVBOX_UA, BROWSER_UA } from './config';
 import { decodeConfigResponse } from './decoder';
 import { isGitHubReleaseSource, prepareGitHubReleaseSource } from './zip-source';
+import { jsonrepair } from 'jsonrepair';
 import type { TVBoxConfig, SourcedConfig, SourceEntry, SourceFetchResult } from './types';
 
 const MAX_MULTI_REPO_DEPTH = 3; // 多仓最大展开深度
@@ -347,6 +348,21 @@ export function parseConfigJson(text: string): TVBoxConfig | null {
     parsed = tryParseJson(repairJsonText(stripped));
   }
 
+  // 客户端（TVBox/AList-TvBox 的 Gson）比严格 JSON 宽松：
+  // 允许注释、未加引号的键、尾逗号、裸控制字符，并且会截取首 { 到末 }。
+  // 用 jsonrepair 对齐这个能力，只在前面全部失败时执行。
+  if (!parsed) {
+    const candidates = [trimJsonObject(stripped), stripped];
+    for (const candidate of candidates) {
+      try {
+        parsed = tryParseJson(jsonrepair(candidate));
+        if (parsed) break;
+      } catch {
+        // 继续尝试下一个候选
+      }
+    }
+  }
+
   if (!parsed) return null;
 
   // 宽松校验：只要是对象就接受（有些配置只有 spider + sites，有些只有 lives）
@@ -384,6 +400,21 @@ function repairJsonText(text: string): string {
   }
 
   return repaired;
+}
+
+/**
+ * 截取首 { / [ 到末 } / ]，对齐 4567 客户端的 ApiConfig.trimJsonObject。
+ * 有些源在 JSON 后面又拼了 HTML/广告，严格 JSON.parse 会因 trailing data 失败。
+ */
+function trimJsonObject(text: string): string {
+  const firstObj = text.indexOf('{');
+  const firstArr = text.indexOf('[');
+  const starts = [firstObj, firstArr].filter((index) => index >= 0);
+  if (starts.length === 0) return text;
+
+  const start = Math.min(...starts);
+  const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+  return end > start ? text.slice(start, end + 1) : text.slice(start);
 }
 
 /**

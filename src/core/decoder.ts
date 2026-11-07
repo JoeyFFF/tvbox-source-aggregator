@@ -71,7 +71,8 @@ export async function decodeConfigResponse(
  */
 function decodeImageWrapped(text: string): string | null {
   // 移植自 ApiConfig.FindResult(): Pattern.compile("[A-Za-z0]{8}\\*\\*")
-  const marker = /[A-Za-z0]{8}\*\*/;
+  // 客户端实际源里会出现数字 1（如 SWKYkz1W**），不能只允许数字 0。
+  const marker = /[A-Za-z0-9]{8}\*\*/;
   const match = marker.exec(text);
   if (!match) return null;
 

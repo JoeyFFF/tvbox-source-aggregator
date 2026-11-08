@@ -9,6 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadDeadUrls } from './core/live-deadlist';
+import { loadChannelOrder, applyChannelOrder } from './core/live-order';
 import { bareUrl } from './core/live-url';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
@@ -507,6 +508,15 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       logger.infoFields('aggregation', 'dead-list-filtered', {
         deadList: deadUrls.length, droppedUrls, droppedChannels, leftGroups: keptGroups.length,
       });
+    }
+  }
+
+  // Step 6.7: 分组内频道自定义顺序（后台「频道排序」保存的拖动结果）
+  if (Array.isArray(merged.lives) && merged.lives.length > 0) {
+    const orderConfig = await loadChannelOrder(storage);
+    if (Object.keys(orderConfig.groups).length > 0) {
+      merged.lives = applyChannelOrder(merged.lives as never, orderConfig) as never;
+      logger.infoFields('aggregation', 'channel-order-applied', { groups: Object.keys(orderConfig.groups).length });
     }
   }
 

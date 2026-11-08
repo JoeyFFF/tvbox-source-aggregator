@@ -931,6 +931,8 @@ function switchTab(tab) {
     const id = 'panel' + tab.charAt(0).toUpperCase() + tab.slice(1);
     p.classList.toggle('active', p.id === id);
   });
+  // 排序面板数据依赖登录态，切到直播页时重新拉一次，避免登录前初始化时 401 后一直是空
+  if (tab === 'live') loadChannelOrder();
 }
 
 // --- Source health ---
@@ -961,6 +963,7 @@ async function loadAll() {
   loadSearchQuota();
   loadCloudCredentials();
   loadChannelProbe();
+  loadChannelOrder();
   loadDedupConfig();
   loadGroupOrder();
   loadBgSettings();

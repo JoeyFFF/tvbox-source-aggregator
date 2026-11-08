@@ -8,14 +8,17 @@ import type {
 } from './types';
 import { TVBOX_UA, BROWSER_UA } from './config';
 import { cleanPlaybackUrl, type LiveMirrorGroup } from './live-mirrors';
+import { chooseFailureTag, isLongTermFailed, isPermanentProbeFailure, stripFailurePrefix } from './channel-health';
 import {
   compileLiveUrlBlacklist,
   filterLiveUrlBlacklist,
   type LiveUrlBlacklistRuleSet,
 } from './live-url-blacklist';
 import {
-  buildLiveGroupDisplayName,
+  addLiveGroupPrefix,
+  applyLiveGroupRenames,
   buildLiveGroupSnapshot,
+  compileLiveGroupRenames,
   createLiveGroupRuleMatcher,
   filterLiveGroupDecision,
   orderLiveGroupNames,
@@ -462,10 +465,23 @@ export async function mergeLivesToNative(
   const ruleMatcher = groupRules && groupRules.rules.length > 0
     ? createLiveGroupRuleMatcher(groupRules, provinceOf)
     : undefined;
+  const compiledRenames = compileLiveGroupRenames(groupRules?.renames);
   const targetFilter = new Set(groupRules?.filterTargets || []);
   const resolveForOutput = (group: string, name: string) =>
     filterLiveGroupDecision(resolveLiveGroup(group, name, ruleMatcher, builtin, useBuiltin), targetFilter);
   const groupSnapshot = buildLiveGroupSnapshot(allEntries, resolveForOutput);
+
+  // 确定性失败（DNS 不存在、404/410、非法 URL）和长期失败直接删除；
+  // 短期失败仍保留，由 allFailed 标记失败原因前缀。
+  const isFilteredFailure = (e: ChannelEntry) => {
+    const entry = channelSpeedMap?.[e.url];
+    return isPermanentProbeFailure(entry) || isLongTermFailed(entry);
+  };
+  const outputEntries = allEntries.filter((e) => !isFilteredFailure(e));
+  const filteredFailedUrls = allEntries.length - outputEntries.length;
+  if (filteredFailedUrls > 0) {
+    console.log(`[live-merger] Filtered ${filteredFailedUrls} permanently/long-term failed URL(s)`);
+  }
 
   // 按目标组与规范化显示名合并 urls，保留自定义前缀的频道身份
   // key: [group, domesticPrefix, normalizedName] → { group, rawName, logo, urls: Map<url, ChannelEntry> }
@@ -477,16 +493,17 @@ export async function mergeLivesToNative(
   }
   const channelMap = new Map<string, AggChannel>();
 
-  for (const e of allEntries) {
+  for (const e of outputEntries) {
     const decision = resolveForOutput(e.group || '其他', e.name);
     const mappedGroup = decision.group;
     if (!mappedGroup) continue; // 电台频道或管理端规则过滤
     const prefix = decision.prefix !== undefined
       ? decision.prefix
       : (mappedGroup === '地方台' ? (provinceOf(e.group || '其他') || '') : '');
-    const displayRawName = buildLiveGroupDisplayName(e.group || '其他', e.name, decision, provinceOf);
+    const renamedName = applyLiveGroupRenames(e.name, compiledRenames);
+    const displayRawName = addLiveGroupPrefix(e.group || '其他', renamedName, decision, provinceOf);
     const normName = mappedGroup === '境内电视台'
-      ? normalizeDomesticName(e.name)
+      ? normalizeDomesticName(renamedName)
       : normalizeChannelName(displayRawName);
     if (!normName) continue;
     const channelKey = JSON.stringify([mappedGroup, mappedGroup === '境内电视台' ? prefix : '', normName]);
@@ -510,19 +527,23 @@ export async function mergeLivesToNative(
   // 按 group 组织
   const groupMap = new Map<string, TVBoxLiveChannel[]>();
   let totalUrls = 0;
+  let emittedChannels = 0;
 
   for (const [, agg] of channelMap) {
     // 对 urls 排序
     const urlList = Array.from(agg.urls.values());
     if (urlList.length === 0) continue;
 
-    // 探活结果：只有所有 URL 都有明确 fail 结果时才标记 [失效]；
+    // 探活结果：只有所有 URL 都有明确 fail 结果时才标记失败原因前缀；
     // 未探过的 URL 不能当作失败，避免误标。
     const speedMap = channelSpeedMap || {};
     const allProbed = urlList.every((e) => speedMap[e.url] != null);
     const allFailed = allProbed && urlList.every((e) => speedMap[e.url]?.kind === 'fail');
-    const baseName = String(agg.rawName || '').replace(/^\[失效\]\s*/, '');
-    const displayName = allFailed ? `[失效] ${baseName}` : baseName;
+    const baseName = stripFailurePrefix(String(agg.rawName || ''));
+    const failureTag = allFailed ? chooseFailureTag(urlList.map((e) => speedMap[e.url])) : null;
+    const displayName = allFailed
+      ? `[${failureTag || '失效'}] ${baseName}`
+      : baseName;
 
     urlList.sort((a, b) => {
       // 优先用 URL 级测速缓存
@@ -564,6 +585,7 @@ export async function mergeLivesToNative(
       groupMap.set(groupKey, list);
     }
     list.push(channel);
+    emittedChannels++;
   }
 
   // 组装 groups；地方台按省份顺序排列，方便按省浏览
@@ -571,8 +593,8 @@ export async function mergeLivesToNative(
   for (const [group, channels] of groupMap) {
     if (group === '地方台' && groupRules?.channelSort !== 'name') {
       channels.sort((a, b) => {
-        const pa = a.name.replace(/^\[失效\]\s*/, '').split('·')[0];
-        const pb = b.name.replace(/^\[失效\]\s*/, '').split('·')[0];
+        const pa = stripFailurePrefix(a.name).split('·')[0];
+        const pb = stripFailurePrefix(b.name).split('·')[0];
         const ia = LOCAL_PROVINCE_ORDER.indexOf(pa);
         const ib = LOCAL_PROVINCE_ORDER.indexOf(pb);
         const ra = ia < 0 ? 999 : ia;
@@ -625,7 +647,7 @@ export async function mergeLivesToNative(
     cleanedGroups = JSON.parse(finalJson);
     return {
       groups: cleanedGroups,
-      totalChannels: channelMap.size,
+      totalChannels: emittedChannels,
       totalUrls,
       sourcesDownloaded,
       sourcesFailed,
@@ -636,7 +658,7 @@ export async function mergeLivesToNative(
   if (cleanedGroups !== groups) {
     return {
       groups: cleanedGroups,
-      totalChannels: channelMap.size,
+      totalChannels: emittedChannels,
       totalUrls,
       sourcesDownloaded,
       sourcesFailed,
@@ -650,7 +672,7 @@ export async function mergeLivesToNative(
 
   return {
     groups,
-    totalChannels: channelMap.size,
+    totalChannels: emittedChannels,
     totalUrls,
     sourcesDownloaded,
     sourcesFailed,
@@ -665,6 +687,7 @@ export async function separatedMergeLives(
   sources: Array<LiveSourceInput | LiveMirrorGroup<LiveSourceInput>>,
   fetchTimeoutMs: number,
   liveUrlBlacklist?: LiveUrlBlacklistRuleSet,
+  channelSpeedMap?: ChannelSpeedMap,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
@@ -683,6 +706,7 @@ export async function separatedMergeLives(
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
   let blockedByUrlRules = 0;
+  let filteredFailedUrls = 0;
   const allGroups: TVBoxLiveGroup[] = [];
   let totalChannels = 0;
   let totalUrls = 0;
@@ -699,8 +723,13 @@ export async function separatedMergeLives(
 
     try {
       const parsedEntries = parseLiveContent(content, sourceName, input.speedMs);
-      const entries = filterLiveUrlBlacklist(parsedEntries, urlBlacklistMatchers);
-      blockedByUrlRules += parsedEntries.length - entries.length;
+      const allowed = filterLiveUrlBlacklist(parsedEntries, urlBlacklistMatchers);
+      blockedByUrlRules += parsedEntries.length - allowed.length;
+      const entries = allowed.filter((e) => {
+        const entry = channelSpeedMap?.[e.url];
+        return !isPermanentProbeFailure(entry) && !isLongTermFailed(entry);
+      });
+      filteredFailedUrls += allowed.length - entries.length;
       if (entries.length === 0) continue;
 
       // 按 group 分组（源内去重）
@@ -730,7 +759,11 @@ export async function separatedMergeLives(
     }
   }
 
-  console.log(`[live-merger] Separated done: ${sourcesDownloaded}/${sources.length} sources, ${allGroups.length} groups, ${totalChannels} channels, blocked ${blockedByUrlRules} by live URL blacklist`);
+  console.log(
+    `[live-merger] Separated done: ${sourcesDownloaded}/${sources.length} sources, ` +
+    `${allGroups.length} groups, ${totalChannels} channels, blocked ${blockedByUrlRules} by live URL blacklist, ` +
+    `filtered ${filteredFailedUrls} permanently/long-term failed URL(s)`,
+  );
 
   return { groups: allGroups, totalChannels, totalUrls, sourcesDownloaded, sourcesFailed };
 }

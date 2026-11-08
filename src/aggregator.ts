@@ -457,10 +457,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       logger.infoFields('aggregation', 'Step 6.5: live-url-blacklist', { rules: liveUrlBlacklist.rules.length });
 
       let mergeResult;
+      const channelSpeedMap = await loadChannelSpeedMap(storage);
       if (liveMergeMode === 'separated') {
-        mergeResult = await separatedMergeLives(liveGroups, config.fetchTimeoutMs, liveUrlBlacklist);
+        mergeResult = await separatedMergeLives(liveGroups, config.fetchTimeoutMs, liveUrlBlacklist, channelSpeedMap);
       } else {
-        const channelSpeedMap = await loadChannelSpeedMap(storage);
         const groupRules = parseLiveGroupRules(await storage.get(KV_LIVE_GROUP_RULES));
         mergeResult = await mergeLivesToNative(liveGroups, config.fetchTimeoutMs, channelSpeedMap, groupRules, liveUrlBlacklist);
       }

@@ -4,6 +4,7 @@ import type { AppConfig } from '../core/types';
 import {
   KV_LIVE_GROUP_RULES,
   KV_LIVE_GROUP_SNAPSHOT,
+  compileLiveGroupRenames,
   createLiveGroupRuleMatcher,
   filterLiveGroupDecision,
   parseLiveGroupRules,
@@ -89,6 +90,7 @@ export function mountLiveGroupBuilderRoutes(app: Hono, deps: LiveGroupBuilderRou
       (group, name) => filterLiveGroupDecision(resolveLiveGroup(group, name, matcher, builtin, useBuiltin), targetFilter),
       provinceOf,
       checked.ruleSet,
+      compileLiveGroupRenames(checked.ruleSet.renames),
     );
     return c.json({ success: true, preview });
   });

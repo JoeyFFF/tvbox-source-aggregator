@@ -1,11 +1,11 @@
 // 直播分组规则：管理端保存到 KV，合并时读取；改规则只需 refresh，不用重启。
-import { isFailedChannelName, stripFailurePrefix } from './channel-health';
 import {
   DEFAULT_BUILTIN_RULES,
   normalizeBuiltinRuleConfig,
   validateBuiltinRuleConfig,
   type BuiltinRuleConfig,
 } from './live-group-defaults';
+import { isFailedChannelName, stripFailurePrefix } from './channel-health';
 
 export const KV_LIVE_GROUP_RULES = 'live_group_rules';
 export const KV_LIVE_GROUP_SNAPSHOT = 'live_group_snapshot';
@@ -15,6 +15,7 @@ const MAX_RULES = 500;
 const MAX_FILTER_TARGETS = 50;
 const MAX_CHANNELS_PER_GROUP = 5000;
 const MAX_GROUP_ORDER = 100;
+const MAX_RENAMES = 100;
 
 export interface LiveGroupRule {
   id: string;
@@ -26,15 +27,30 @@ export interface LiveGroupRule {
   priority: number;
 }
 
+/** 频道显示名重命名规则：按列表顺序依次替换，pattern 使用 JS 正则（flags=i）。 */
+export interface LiveGroupRenameRule {
+  id: string;
+  enabled: boolean;
+  pattern: string;
+  replacement: string; // 支持 $1 等引用；留空 = 删除匹配部分
+}
+
+export interface CompiledLiveGroupRename {
+  id: string;
+  re: RegExp;
+  replacement: string;
+}
+
 export interface LiveGroupSortOptions {
   groupOrder?: string[]; // 目标组显示顺序；未列出的组按首次出现顺序排在后面
   channelSort?: 'default' | 'name'; // 组内频道排序：default=按合并出现顺序，name=按显示名
-  failedLast?: boolean; // 把带 [失效] 前缀的频道放到组末
+  failedLast?: boolean; // 把带失败原因前缀的频道放到组末
 }
 
 export interface LiveGroupRuleSet extends LiveGroupSortOptions {
   version: 1;
   rules: LiveGroupRule[];
+  renames?: LiveGroupRenameRule[]; // 频道显示名重命名，分组后、合并前按顺序执行
   filterTargets?: string[]; // 最终目标组整组过滤，例如 ['轮播台']
   builtin?: BuiltinRuleConfig; // 内置规则的可见配置；缺省时使用默认值
   useBuiltin?: boolean; // false = 纯自定义规则，不套用内置规则
@@ -178,6 +194,37 @@ export function validateLiveGroupRules(input: unknown):
     : undefined;
   const failedLast = rawFailedLast === true;
 
+  const rawRenames = (!Array.isArray(input) && input && typeof input === 'object'
+    && Array.isArray((input as { renames?: unknown }).renames))
+    ? (input as { renames: unknown[] }).renames
+    : [];
+  if (rawRenames.length > MAX_RENAMES) {
+    return { ok: false, error: `重命名最多 ${MAX_RENAMES} 条` };
+  }
+  const renames: LiveGroupRenameRule[] = [];
+  const renameIds = new Set<string>();
+  for (let i = 0; i < rawRenames.length; i++) {
+    const raw = rawRenames[i];
+    if (!raw || typeof raw !== 'object') return { ok: false, error: `第 ${i + 1} 条重命名不是对象` };
+    const r = raw as Record<string, unknown>;
+    const pattern = String(r.pattern ?? '').trim();
+    if (!pattern) return { ok: false, error: `第 ${i + 1} 条重命名缺少 pattern` };
+    if (pattern.length > 500) return { ok: false, error: `第 ${i + 1} 条重命名 pattern 最长 500 字符` };
+    const replacement = String(r.replacement ?? '');
+    if (replacement.length > 500) {
+      return { ok: false, error: `第 ${i + 1} 条重命名 replacement 最长 500 字符` };
+    }
+    try {
+      compilePattern(pattern);
+    } catch {
+      return { ok: false, error: `第 ${i + 1} 条重命名 pattern 不是合法正则` };
+    }
+    let id = String(r.id ?? '').trim() || `rn${i + 1}`;
+    while (renameIds.has(id)) id = `${id}_`;
+    renameIds.add(id);
+    renames.push({ id, enabled: r.enabled !== false, pattern, replacement });
+  }
+
   const rules: LiveGroupRule[] = [];
   const ids = new Set<string>();
   for (let i = 0; i < rawRules.length; i++) {
@@ -221,7 +268,7 @@ export function validateLiveGroupRules(input: unknown):
   return {
     ok: true,
     ruleSet: {
-      version: 1, rules, filterTargets, builtin: checkedBuiltin.config, useBuiltin: rawUseBuiltin,
+      version: 1, rules, renames, filterTargets, builtin: checkedBuiltin.config, useBuiltin: rawUseBuiltin,
       groupOrder, channelSort, failedLast,
     },
   };
@@ -237,6 +284,7 @@ export function parseLiveGroupRules(raw: string | null | undefined): LiveGroupRu
     // 规则严格校验；builtin 宽松合并，避免旧格式/局部配置导致自定义规则被整体丢弃。
     const checked = validateLiveGroupRules({
       rules: Array.isArray(parsed) ? parsed : parsed.rules,
+      renames: Array.isArray(parsed) ? [] : parsed.renames,
       filterTargets: Array.isArray(parsed) ? [] : parsed.filterTargets,
       useBuiltin: Array.isArray(parsed) ? true : parsed.useBuiltin,
       groupOrder: Array.isArray(parsed) ? [] : parsed.groupOrder,
@@ -396,17 +444,53 @@ export function buildLiveGroupSnapshot(
   };
 }
 
-/** 与合并输出一致的显示名：地方台按省份加前缀。 */
-export function buildLiveGroupDisplayName(
+/** 编译启用的重命名规则；保存时已校验，解析旧数据时坏正则跳过。 */
+export function compileLiveGroupRenames(renames?: LiveGroupRenameRule[]): CompiledLiveGroupRename[] {
+  const out: CompiledLiveGroupRename[] = [];
+  for (const r of renames || []) {
+    if (!r || r.enabled === false) continue;
+    const pattern = String(r.pattern || '').trim();
+    if (!pattern) continue;
+    try {
+      out.push({ id: r.id, re: new RegExp(pattern, 'i'), replacement: String(r.replacement ?? '') });
+    } catch {
+      // 旧数据中的非法正则忽略该条，不影响其余规则
+    }
+  }
+  return out;
+}
+
+/** 按列表顺序应用重命名；替换结果为空时保留原名。 */
+export function applyLiveGroupRenames(name: string, compiled: CompiledLiveGroupRename[]): string {
+  if (!compiled.length) return name;
+  let s = name;
+  for (const r of compiled) s = s.replace(r.re, r.replacement);
+  s = s.trim();
+  return s || name;
+}
+
+/** 在已重命名的频道名上套地方台/自定义前缀。 */
+export function addLiveGroupPrefix(
   sourceGroup: string,
-  name: string,
+  renamedName: string,
   decision: LiveGroupDecision,
   provinceOf: (group: string) => string | null = provinceFromGroup,
 ): string {
   const prefix = decision.prefix !== undefined
     ? decision.prefix
     : (decision.group === '地方台' ? (provinceOf(sourceGroup) || '') : '');
-  return prefix && !name.startsWith(prefix) ? `${prefix}·${name}` : name;
+  return prefix && !renamedName.startsWith(prefix) ? `${prefix}·${renamedName}` : renamedName;
+}
+
+/** 与合并输出一致的显示名：先应用重命名，再套前缀。 */
+export function buildLiveGroupDisplayName(
+  sourceGroup: string,
+  name: string,
+  decision: LiveGroupDecision,
+  provinceOf: (group: string) => string | null = provinceFromGroup,
+  renames: CompiledLiveGroupRename[] = [],
+): string {
+  return addLiveGroupPrefix(sourceGroup, applyLiveGroupRenames(name, renames), decision, provinceOf);
 }
 
 export function previewLiveGroupSnapshot(
@@ -414,6 +498,7 @@ export function previewLiveGroupSnapshot(
   resolve: (group: string, name: string) => LiveGroupDecision,
   provinceOf: (group: string) => string | null = provinceFromGroup,
   sortOptions?: LiveGroupSortOptions,
+  renames: CompiledLiveGroupRename[] = [],
 ): LiveGroupPreview {
   const sources: LiveGroupPreviewSource[] = [];
   const targetChannels = new Map<string, Map<string, LiveGroupPreviewChannel>>();
@@ -424,7 +509,7 @@ export function previewLiveGroupSnapshot(
     for (const name of g.channels || []) {
       const decision = resolve(g.group, name);
       const target = decision.group ?? LIVE_GROUP_FILTER_TARGET;
-      const displayName = buildLiveGroupDisplayName(g.group, name, decision, provinceOf);
+      const displayName = buildLiveGroupDisplayName(g.group, name, decision, provinceOf, renames);
       const key = `${target}|${displayName}`;
       if (!seen.has(key)) {
         seen.add(key);

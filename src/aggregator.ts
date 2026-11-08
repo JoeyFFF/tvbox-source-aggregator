@@ -8,6 +8,8 @@ import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type Sit
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
+import { loadDeadUrls } from './core/live-deadlist';
+import { bareUrl } from './core/live-url';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
@@ -129,7 +131,19 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const macCMSRaw = await storage.get(KV_MACCMS_SOURCES);
   const hasMacCMS = macCMSRaw ? JSON.parse(macCMSRaw).length > 0 : false;
 
-  if (sources.length === 0 && !hasMacCMS) {
+  // 纯直播用法：只有 txt/m3u 直播源、不配任何点播配置源，也应该能聚合
+  // （默认的「源列表为空就直接 return」会让这类用户完全跑不出东西）
+  const liveRawPeek = await storage.get(KV_LIVE_SOURCES);
+  let hasLiveSources = false;
+  if (liveRawPeek) {
+    try {
+      hasLiveSources = JSON.parse(liveRawPeek).length > 0;
+    } catch {
+      hasLiveSources = false;
+    }
+  }
+
+  if (sources.length === 0 && !hasMacCMS && !hasLiveSources) {
     logger.warn('aggregation', 'No sources configured, nothing to do');
     return;
   }
@@ -187,7 +201,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // 更新源健康状态
   await updateSourceHealth(storage, fetchResults);
 
-  if (sourcedConfigs.length === 0 && inlineConfigs.length === 0 && macCMSConfigs.length === 0) {
+  if (sourcedConfigs.length === 0 && inlineConfigs.length === 0 && macCMSConfigs.length === 0 && !hasLiveSources) {
     logger.warn('aggregation', 'No valid configs fetched and no MacCMS/inline sources, keeping previous cache');
     return;
   }
@@ -426,17 +440,35 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
       logger.infoFields('aggregation', 'Step 6.5: live-sources', { unique: uniqueInputs.length, mode: liveMergeMode });
 
+      // 两种模式都要用测速结果排序，否则「按源分开」模式下测速形同虚设
+      const channelSpeedMap = await loadChannelSpeedMap(storage);
+
       let mergeResult;
       if (liveMergeMode === 'separated') {
-        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs);
+        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
       } else {
-        const channelSpeedMap = await loadChannelSpeedMap(storage);
         mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
       }
-      merged.lives = mergeResult.groups;
 
-      // 保存合并树供 channel-probe 使用
-      await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+      // 下载/解析整体失败时不要把直播树清空——沿用上次结果，避免电视端直播源突然变空
+      if (mergeResult.groups.length === 0) {
+        const prevTree = await storage.get(KV_CHANNEL_MERGED_TREE);
+        if (prevTree) {
+          try {
+            merged.lives = JSON.parse(prevTree);
+            logger.warn('aggregation', 'Step 6.5: live merge produced 0 groups, reusing previous tree');
+          } catch {
+            merged.lives = [];
+          }
+        } else {
+          merged.lives = [];
+        }
+      } else {
+        merged.lives = mergeResult.groups;
+
+        // 保存合并树供 channel-probe 使用
+        await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+      }
 
       logger.infoFields('aggregation', 'live-merge-done', {
         downloaded: mergeResult.sourcesDownloaded, total: uniqueInputs.length,
@@ -444,6 +476,38 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       });
     }
   }
+  }
+
+  // Step 6.6: 死源黑名单过滤（管理后台「清理死源」按钮写入）
+  // 只过滤输出，不影响测速：测速仍按完整频道树跑，源恢复后会自动移出黑名单
+  if (Array.isArray(merged.lives) && merged.lives.length > 0) {
+    const deadUrls = await loadDeadUrls(storage);
+    if (deadUrls.length > 0) {
+      const deadSet = new Set(deadUrls);
+      const keptGroups: typeof merged.lives = [];
+      let droppedUrls = 0;
+      let droppedChannels = 0;
+
+      for (const group of merged.lives as Array<{ group?: string; channels?: Array<{ name: string; urls: string[] }> }>) {
+        if (!Array.isArray(group.channels)) {
+          keptGroups.push(group as never);
+          continue;
+        }
+        const channels: Array<{ name: string; urls: string[] }> = [];
+        for (const ch of group.channels) {
+          const kept = (ch.urls || []).filter((u) => !deadSet.has(bareUrl(u)));
+          droppedUrls += (ch.urls || []).length - kept.length;
+          if (kept.length > 0) channels.push({ ...ch, urls: kept });
+          else droppedChannels++;
+        }
+        if (channels.length > 0) keptGroups.push({ ...group, channels } as never);
+      }
+
+      merged.lives = keptGroups;
+      logger.infoFields('aggregation', 'dead-list-filtered', {
+        deadList: deadUrls.length, droppedUrls, droppedChannels, leftGroups: keptGroups.length,
+      });
+    }
   }
 
   // Step 6.8: 自定义分组排序

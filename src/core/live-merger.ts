@@ -7,6 +7,7 @@ import type {
   ChannelSpeedMap,
 } from './types';
 import { TVBOX_UA, BROWSER_UA } from './config';
+import { splitUrlSource, bareUrl, joinUrlSource, compareBySpeed } from './live-url';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -94,12 +95,13 @@ function parseM3U(content: string, source: string, sourceSpeedMs?: number): Chan
     } else if (line.startsWith('#')) {
       continue; // 其他指令忽略
     } else if (currentName && /^https?:\/\//i.test(line)) {
+      const { url, source: urlSource } = splitUrlSource(line, source);
       out.push({
         group: currentGroup,
         name: currentName,
         logo: currentLogo,
-        url: line,
-        source,
+        url,
+        source: urlSource,
         sourceSpeedMs,
       });
       currentName = '';
@@ -112,7 +114,7 @@ function parseM3U(content: string, source: string, sourceSpeedMs?: number): Chan
 /**
  * 解析 DIYP/txt 格式
  *   央视,#genre#
- *   CCTV-1,http://url1#http://url2
+ *   CCTV-1,http://url1$源A#http://url2$源B
  *   CCTV-2,http://...
  */
 function parseTxt(content: string, source: string, sourceSpeedMs?: number): ChannelEntry[] {
@@ -137,11 +139,12 @@ function parseTxt(content: string, source: string, sourceSpeedMs?: number): Chan
     // 右侧可能包含多个 URL，用 # 分隔
     const urls = right.split('#').filter((u) => /^https?:\/\//i.test(u.trim()));
     for (const u of urls) {
+      const { url, source: urlSource } = splitUrlSource(u.trim(), source);
       out.push({
         group: currentGroup,
         name: left,
-        url: u.trim(),
-        source,
+        url,
+        source: urlSource,
         sourceSpeedMs,
       });
     }
@@ -178,12 +181,17 @@ export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
   return lines.join('\n');
 }
 
-/** 自动识别 m3u 还是 txt */
+/**
+ * 自动识别 m3u 还是 txt
+ *
+ * 不能用 content.includes('#EXTINF')：只要频道名或 URL 里偶然出现这几个字符，
+ * 整份 txt 就会被误判成 m3u，解析结果为 0 个频道（真实源里确实出现过）。
+ * 只认「行首」的 m3u 标记。
+ */
 export function parseLiveContent(content: string, source: string, sourceSpeedMs?: number): ChannelEntry[] {
-  if (content.includes('#EXTM3U') || content.includes('#EXTINF')) {
-    return parseM3U(content, source, sourceSpeedMs);
-  }
-  return parseTxt(content, source, sourceSpeedMs);
+  const head = content.replace(/^\uFEFF/, '').trimStart();
+  const isM3U = head.startsWith('#EXTM3U') || /^#EXTINF/m.test(head);
+  return isM3U ? parseM3U(content, source, sourceSpeedMs) : parseTxt(content, source, sourceSpeedMs);
 }
 
 // ─── 下载 m3u/txt ──────────────────────────────────────
@@ -318,33 +326,11 @@ export async function mergeLivesToNative(
   let totalUrls = 0;
 
   for (const [, agg] of channelMap) {
-    // 对 urls 排序
-    const urlList = Array.from(agg.urls.values());
-    urlList.sort((a, b) => {
-      // 优先用 URL 级测速缓存
-      const sa = channelSpeedMap?.[a.url];
-      const sb = channelSpeedMap?.[b.url];
-      const fa = sa && sa.kind !== 'fail' ? sa.speedMs : undefined;
-      const fb = sb && sb.kind !== 'fail' ? sb.speedMs : undefined;
-
-      if (fa != null && fb != null) return fa - fb;
-      if (fa != null) return -1;
-      if (fb != null) return 1;
-
-      // 失败的 URL 排到末尾
-      const failA = sa?.kind === 'fail';
-      const failB = sb?.kind === 'fail';
-      if (failA && !failB) return 1;
-      if (!failA && failB) return -1;
-
-      // 降级：源级 speedMs
-      const ssA = a.sourceSpeedMs ?? Infinity;
-      const ssB = b.sourceSpeedMs ?? Infinity;
-      return ssA - ssB;
-    });
+    // 对 urls 排序：最快的排第一（这是「选优」的核心）
+    const urlList = Array.from(agg.urls.values()).sort((a, b) => compareBySpeed(a, b, channelSpeedMap));
 
     // 拼 $ 源名（URL 预防性 encode 避免 type 泄漏）
-    const urlStrs = urlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
+    const urlStrs = urlList.map((e) => joinUrlSource(scrubUrlType(e.url), scrubTypeLiteral(e.source)));
     totalUrls += urlStrs.length;
 
     const channel: TVBoxLiveChannel = {
@@ -428,6 +414,7 @@ export async function mergeLivesToNative(
 export async function separatedMergeLives(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
+  channelSpeedMap?: ChannelSpeedMap,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
@@ -458,24 +445,32 @@ export async function separatedMergeLives(
       const entries = parseLiveContent(content, sourceName, input.speedMs);
       if (entries.length === 0) continue;
 
-      // 按 group 分组（源内去重）
-      const groupMap = new Map<string, Map<string, string[]>>();
+      // 按 group 分组（源内去重）+ 频道名规范化（HD/高清/繁简 归一）
+      interface Agg { rawName: string; urls: Map<string, ChannelEntry>; }
+      const groupMap = new Map<string, Map<string, Agg>>();
       for (const e of entries) {
         const grp = e.group || '其他';
         if (!groupMap.has(grp)) groupMap.set(grp, new Map());
         const channels = groupMap.get(grp)!;
-        if (!channels.has(e.name)) channels.set(e.name, []);
-        const urls = channels.get(e.name)!;
-        if (!urls.includes(e.url)) urls.push(e.url);
+        const normName = normalizeChannelName(e.name) || e.name;
+        let agg = channels.get(normName);
+        if (!agg) {
+          agg = { rawName: e.name, urls: new Map() };
+          channels.set(normName, agg);
+        }
+        if (!agg.urls.has(e.url)) agg.urls.set(e.url, e);
       }
 
       // 用「源名」前缀拼接 group 名
       for (const [grp, channels] of groupMap) {
         const prefixedGroup = `「${sourceName}」${grp}`;
         const chs: TVBoxLiveChannel[] = [];
-        for (const [name, urls] of channels) {
-          chs.push({ name, urls });
-          totalUrls += urls.length;
+        for (const [, agg] of channels) {
+          // 同一份 txt 里也要按测速排序，否则默认（按源分开）模式下测速等于白跑
+          const list = Array.from(agg.urls.values()).sort((a, b) => compareBySpeed(a, b, channelSpeedMap));
+          const urlStrs = list.map((e) => joinUrlSource(scrubUrlType(e.url), scrubTypeLiteral(e.source)));
+          chs.push({ name: scrubTypeLiteral(agg.rawName), urls: urlStrs });
+          totalUrls += urlStrs.length;
         }
         totalChannels += chs.length;
         allGroups.push({ group: prefixedGroup, channels: chs });
@@ -499,9 +494,8 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
   for (const g of groups) {
     for (const ch of g.channels) {
       for (const u of ch.urls) {
-        const idx = u.lastIndexOf('$');
-        const bare = idx > 0 ? u.slice(0, idx) : u;
-        if (bare) set.add(bare);
+        const b = bareUrl(u);
+        if (b) set.add(b);
       }
     }
   }

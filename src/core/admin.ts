@@ -918,6 +918,7 @@ const translations = {
     ftpPath:'Remote path', ftpPublic:'Public URL', ftpSecure:'Use FTPS (explicit TLS)',
     ftpTest:'Test connection', ftpRunNow:'Upload now',
     ftpHint:'Uploads exactly what /live.txt returns (speed-sorted DIYP format). Password is stored in plain text; use a dedicated write-only FTP account.',
+    ftpWritable:'writable', ftpNotWritable:'NOT writable',
     ftpPassKeep:'leave blank to keep', ftpTesting:'Testing...', ftpTestOk:'Connection OK',
     ftpTestFail:'Connection failed', ftpUploading:'Uploading...',
     ftpUploadOk:'Uploaded {n} bytes', ftpUploadFail:'Upload failed',
@@ -1045,6 +1046,7 @@ const translations = {
     ftpPath:'远端路径', ftpPublic:'对外访问地址', ftpSecure:'使用 FTPS（显式 TLS）',
     ftpTest:'测试连接', ftpRunNow:'立即上传',
     ftpHint:'上传的是与 /live.txt 完全相同的内容（测速排序后的 DIYP 格式）。密码以明文存在本地数据库，建议单独建一个只对目标目录有写权限的 FTP 账号。',
+    ftpWritable:'可写', ftpNotWritable:'不可写',
     ftpPassKeep:'留空则不修改', ftpTesting:'测试中...', ftpTestOk:'连接成功',
     ftpTestFail:'连接失败', ftpUploading:'上传中...',
     ftpUploadOk:'已上传 {n} 字节', ftpUploadFail:'上传失败',
@@ -1756,8 +1758,17 @@ async function testFtpSync() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ftpFormBody()
     });
     const d = await res.json();
-    if (d.ok) { st.textContent = t('ftpTestOk'); st.style.color = 'var(--success,#1D9E75)'; }
-    else { st.textContent = t('ftpTestFail') + ': ' + (d.error || ''); st.style.color = 'var(--danger,#A32D2D)'; }
+    if (d.ok) {
+      const parts = [t('ftpTestOk')];
+      if (d.pwd) parts.push('目录 ' + d.pwd);
+      parts.push(d.writable ? t('ftpWritable') : (t('ftpNotWritable') + (d.note ? '（' + d.note + '）' : '')));
+      if (d.files && d.files.length) parts.push(d.files.slice(0, 6).join(', '));
+      st.textContent = parts.join(' | ');
+      st.style.color = d.writable ? 'var(--success,#1D9E75)' : 'var(--danger,#A32D2D)';
+    } else {
+      st.textContent = t('ftpTestFail') + ': ' + (d.error || '');
+      st.style.color = 'var(--danger,#A32D2D)';
+    }
   } catch (e) { st.textContent = t('networkError'); }
 }
 

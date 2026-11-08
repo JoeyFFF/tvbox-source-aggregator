@@ -59,7 +59,10 @@ export async function saveFtpConfig(storage: Storage, cfg: FtpSyncConfig): Promi
 interface FtpClientLike {
   access(opts: Record<string, unknown>): Promise<void>;
   ensureDir(dir: string): Promise<void>;
+  cd(dir: string): Promise<void>;
   uploadFrom(source: unknown, remotePath: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  list(path?: string): Promise<Array<{ name: string; type: number }>>;
   pwd(): Promise<string>;
   close(): void;
 }
@@ -106,10 +109,48 @@ async function withClient<T>(cfg: FtpSyncConfig, fn: (c: FtpClientLike) => Promi
   }
 }
 
-export async function testFtpConnection(cfg: FtpSyncConfig): Promise<FtpResult> {
+export interface FtpDiagnoseResult extends FtpResult {
+  pwd?: string;
+  files?: string[];
+  writable?: boolean;
+  note?: string;
+}
+
+/**
+ * 连接诊断：除了登录，还查「当前目录 / 目录内容 / 能否写入」。
+ * 550 Access is denied 基本都是目标目录不可写或路径不存在，靠这个能直接定位。
+ */
+export async function testFtpConnection(cfg: FtpSyncConfig): Promise<FtpDiagnoseResult> {
   try {
-    const pwd = await withClient(cfg, (c) => c.pwd());
-    return { ok: true, bytes: pwd.length };
+    return await withClient(cfg, async (client) => {
+      const pwd = await client.pwd();
+      let files: string[] = [];
+      try {
+        const list = await client.list();
+        files = list.slice(0, 30).map((f) => f.name);
+      } catch {
+        /* 部分服务端不允许 LIST，忽略 */
+      }
+
+      // 优先探测「真实目标文件路径」是否可写——登录根目录不可写不代表目标目录不可写
+      let writable = false;
+      let note = '';
+      const target = cfg.remotePath || '/live.txt';
+      const probePaths = [`${target}.probe`, '.tvbox-write-test'];
+
+      for (const probe of probePaths) {
+        try {
+          await client.uploadFrom(makeStream('ok'), probe);
+          writable = true;
+          try { await client.remove(probe); } catch { /* ignore */ }
+          break;
+        } catch (err) {
+          note = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      return { ok: true, pwd, files, writable, note: note || undefined };
+    });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -119,21 +160,40 @@ export async function testFtpConnection(cfg: FtpSyncConfig): Promise<FtpResult> 
 export async function uploadLiveTxt(cfg: FtpSyncConfig, content: string): Promise<FtpResult> {
   if (!cfg.host || !cfg.user) return { ok: false, error: 'FTP 未配置' };
 
-  try {
-    await withClient(cfg, async (client) => {
-      const remote = cfg.remotePath || '/live.txt';
-      const idx = remote.lastIndexOf('/');
-      const dir = idx > 0 ? remote.slice(0, idx) : '';
-      const file = idx >= 0 ? remote.slice(idx + 1) : remote;
+  const remote = cfg.remotePath || '/live.txt';
+  const idx = remote.lastIndexOf('/');
+  const dir = idx > 0 ? remote.slice(0, idx) : '';
+  const file = idx >= 0 ? remote.slice(idx + 1) : remote;
 
-      if (dir) {
-        // ensureDir 会把工作目录切到目标目录，随后用文件名上传即可
-        await client.ensureDir(dir);
-      }
-      await client.uploadFrom(makeStream(content), file);
+  // 路径写法兼容：绝对路径 → 目录 + 文件名 → 直接放登录目录
+  const attempts: Array<{ label: string; run: (c: FtpClientLike) => Promise<void> }> = [
+    { label: `绝对路径 ${remote}`, run: (c) => c.uploadFrom(makeStream(content), remote) },
+  ];
+  if (dir) {
+    attempts.push({
+      label: `进入目录 ${dir} 后上传 ${file}`,
+      run: async (c) => { await c.ensureDir(dir); await c.uploadFrom(makeStream(content), file); },
     });
-    return { ok: true, bytes: Buffer.byteLength(content, 'utf8') };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  attempts.push({
+    label: `直接上传到登录目录 ${file}`,
+    run: (c) => c.uploadFrom(makeStream(content), file),
+  });
+
+  const errors: string[] = [];
+  for (const attempt of attempts) {
+    try {
+      await withClient(cfg, attempt.run);
+      return { ok: true, bytes: Buffer.byteLength(content, 'utf8') };
+    } catch (err) {
+      errors.push(`${attempt.label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 全部失败：带上登录目录，方便判断是不是路径/权限问题
+  let pwd = '';
+  try {
+    pwd = await withClient(cfg, (c) => c.pwd());
+  } catch { /* ignore */ }
+  return { ok: false, error: (pwd ? `登录目录 ${pwd}；` : '') + errors.join(' | ') };
 }

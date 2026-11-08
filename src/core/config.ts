@@ -63,7 +63,10 @@ export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 最近一次合并的频道树（供 probe 使用）
 export const KV_LIVE_DEAD_URLS = 'live_dead_urls';
-export const KV_LIVE_CHANNEL_ORDER = 'live_channel_order'; // 分组内频道自定义顺序           // 手动「清理死源」后持久化的黑名单（源恢复后自动移出）
+export const KV_LIVE_CHANNEL_ORDER = 'live_channel_order'; // 分组内频道自定义顺序
+export const KV_LIVE_GROUP_MERGE = 'live_group_merge';     // 直播分组归并规则
+export const KV_SITE_KEEP_LINK = 'site_keep_link';         // 不可达剔除时是否保留链接（true=仅跳过探测）
+export const KV_SITE_SKIP_LIST = 'site_skip_list';         // 保留模式下被跳过的站点指纹           // 手动「清理死源」后持久化的黑名单（源恢复后自动移出）
 
 // 聚合日志
 export const KV_AGG_LOGS = 'agg_logs';

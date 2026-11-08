@@ -13,6 +13,12 @@ import {
   smartSortCctv,
   type ChannelOrderConfig,
 } from '../core/live-order';
+import {
+  loadLiveGroupMerge,
+  saveLiveGroupMerge,
+  defaultLiveGroupMerge,
+  type LiveGroupMergeConfig,
+} from '../core/live-groups';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
   const token = config.adminToken;
@@ -46,6 +52,47 @@ export function mountChannelOrderRoutes(app: Hono, deps: ChannelOrderRouteDeps):
       return [];
     }
   }
+
+  // GET /admin/live-groups — 分组归并规则
+  app.get('/admin/live-groups', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json(await loadLiveGroupMerge(storage));
+  });
+
+  // PUT /admin/live-groups — 保存规则 { enabled, standard?, rules: [{keyword,target}] }
+  app.put('/admin/live-groups', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: Partial<LiveGroupMergeConfig>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const current = await loadLiveGroupMerge(storage);
+    const next: LiveGroupMergeConfig = {
+      enabled: body.enabled !== undefined ? !!body.enabled : current.enabled,
+      standard: Array.isArray(body.standard) && body.standard.length > 0
+        ? body.standard.filter((x): x is string => typeof x === 'string' && !!x.trim())
+        : current.standard,
+      rules: Array.isArray(body.rules)
+        ? body.rules
+          .filter((r): r is { keyword: string; target: string } => !!r && typeof r.keyword === 'string' && typeof r.target === 'string')
+          .map((r) => ({ keyword: r.keyword.trim(), target: r.target.trim() }))
+          .filter((r) => r.keyword && r.target)
+        : current.rules,
+    };
+    await saveLiveGroupMerge(storage, next);
+    if (triggerRefresh) triggerRefresh().catch(() => {});
+    return c.json({ success: true, enabled: next.enabled, rules: next.rules.length });
+  });
+
+  // POST /admin/live-groups/reset — 恢复默认规则
+  app.post('/admin/live-groups/reset', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    await saveLiveGroupMerge(storage, defaultLiveGroupMerge());
+    if (triggerRefresh) triggerRefresh().catch(() => {});
+    return c.json({ success: true });
+  });
 
   // GET /admin/channel-order — 当前分组与频道（按生效顺序）
   app.get('/admin/channel-order', async (c) => {

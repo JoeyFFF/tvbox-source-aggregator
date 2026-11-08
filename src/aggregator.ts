@@ -10,9 +10,11 @@ import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadDeadUrls } from './core/live-deadlist';
 import { loadChannelOrder, applyChannelOrder } from './core/live-order';
+import { loadLiveGroupMerge } from './core/live-groups';
+import { loadSkipList, addSkipList } from './core/site-skip';
 import { bareUrl } from './core/live-url';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_SITE_KEEP_LINK, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -332,8 +334,25 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   if (!speedTestEnabled) {
     logger.info('aggregation', 'Step 6: Speed test disabled, skipping');
   } else if (merged.sites && merged.sites.length > 0) {
+    // 「保留链接」模式下，被判定不可达的站点留在输出里，但不再重复探测（省掉大量超时等待）
+    const skipList = new Set(await loadSkipList(storage));
+    let probeTargets = merged.sites;
+    if (skipList.size > 0) {
+      const kept = [];
+      for (const site of merged.sites) {
+        const fp = await siteFingerprint(site);
+        if (!skipList.has(fp)) kept.push(site);
+      }
+      probeTargets = kept;
+      if (kept.length < merged.sites.length) {
+        logger.infoFields('aggregation', 'Step 6: skip-listed sites excluded from probe', {
+          skipped: merged.sites.length - kept.length, left: kept.length,
+        });
+      }
+    }
+
     logger.infoFields('aggregation', 'Step 6: site probe', { depth: probeDeep ? 'deep' : 'shallow' });
-    siteProbeMap = await batchSiteSpeedTest(merged.sites, config.siteTimeoutMs, probeDeep);
+    siteProbeMap = await batchSiteSpeedTest(probeTargets, config.siteTimeoutMs, probeDeep);
 
     // 提取纯 speedMs map 供后续 dedup 使用
     for (const [key, probe] of siteProbeMap) {
@@ -443,12 +462,14 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
       // 两种模式都要用测速结果排序，否则「按源分开」模式下测速形同虚设
       const channelSpeedMap = await loadChannelSpeedMap(storage);
+      // 分组归并：把各源自带的几百个杂组收进标准分组（只在合并模式下生效）
+      const groupMerge = await loadLiveGroupMerge(storage);
 
       let mergeResult;
       if (liveMergeMode === 'separated') {
         mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
       } else {
-        mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
+        mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap, groupMerge);
       }
 
       // 下载/解析整体失败时不要把直播树清空——沿用上次结果，避免电视端直播源突然变空
@@ -759,8 +780,11 @@ async function updateSiteHealth(
 
   // 自动清理：连续失败 >= 5 时加黑名单（需开关开启）
   const autoCleanRaw = await storage.get(KV_SITE_AUTO_CLEAN);
+  const keepLinkRaw = await storage.get(KV_SITE_KEEP_LINK);
+  const keepLink = keepLinkRaw === 'true';
   if (autoCleanRaw === 'true' && merged.sites) {
     const blacklist = await loadBlacklist(storage);
+    const skipFps: string[] = [];
     let cleaned = 0;
     const MAX_AUTO_CLEAN = 5;
 
@@ -769,7 +793,14 @@ async function updateSiteHealth(
       const h = healthMap[site.key];
       if (h && h.consecutiveFailures >= 5) {
         const fp = await siteFingerprint(site);
-        if (!blacklist.sites.includes(fp)) {
+        if (keepLink) {
+          // 保留链接：不删站点，只记入跳过名单，后续聚合不再探测它
+          if (!skipFps.includes(fp)) {
+            skipFps.push(fp);
+            cleaned++;
+            logger.infoFields('aggregation', 'auto-clean-skip-listed', { key: site.key, name: site.name, failures: h.consecutiveFailures });
+          }
+        } else if (!blacklist.sites.includes(fp)) {
           blacklist.sites.push(fp);
           cleaned++;
           logger.infoFields('aggregation', 'auto-clean-blacklisted', { key: site.key, name: site.name, failures: h.consecutiveFailures });
@@ -777,6 +808,9 @@ async function updateSiteHealth(
       }
     }
 
+    if (keepLink && skipFps.length > 0) {
+      await addSkipList(storage, skipFps);
+    }
     if (cleaned > 0) {
       await saveBlacklist(storage, blacklist);
       logger.infoFields('aggregation', 'auto-clean-done', { cleaned });

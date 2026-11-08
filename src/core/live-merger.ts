@@ -8,6 +8,7 @@ import type {
 } from './types';
 import { TVBOX_UA, BROWSER_UA } from './config';
 import { splitUrlSource, bareUrl, joinUrlSource, compareBySpeed } from './live-url';
+import { normalizeGroupName, groupPriority, type LiveGroupMergeConfig } from './live-groups';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -256,6 +257,7 @@ export async function mergeLivesToNative(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
+  groupMerge?: LiveGroupMergeConfig,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
@@ -305,15 +307,22 @@ export async function mergeLivesToNative(
     const normName = normalizeChannelName(e.name);
     if (!normName) continue;
 
+    const groupName = groupMerge?.enabled
+      ? normalizeGroupName(e.group || '其他', groupMerge)
+      : (e.group || '其他');
+
     let agg = channelMap.get(normName);
     if (!agg) {
       agg = {
-        group: e.group || '其他',
+        group: groupName,
         rawName: e.name,
         logo: e.logo,
         urls: new Map(),
       };
       channelMap.set(normName, agg);
+    } else if (groupMerge?.enabled && groupPriority(groupName, groupMerge) < groupPriority(agg.group, groupMerge)) {
+      // 同一个台出现在多个分组：归到最具体的那个（央视 > 卫视 > 其他）
+      agg.group = groupName;
     }
     if (!agg.urls.has(e.url)) {
       agg.urls.set(e.url, e);
@@ -348,10 +357,19 @@ export async function mergeLivesToNative(
     list.push(channel);
   }
 
-  // 组装 groups
+  // 组装 groups（启用分组归并时按标准分组顺序排列，央视/卫视在最前）
   const groups: TVBoxLiveGroup[] = [];
   for (const [group, channels] of groupMap) {
     groups.push({ group, channels });
+  }
+  if (groupMerge?.enabled) {
+    const idx = new Map<string, number>();
+    groupMerge.standard.forEach((g, i) => idx.set(g, i));
+    groups.sort((a, b) => {
+      const ia = idx.has(a.group) ? idx.get(a.group)! : 999;
+      const ib = idx.has(b.group) ? idx.get(b.group)! : 999;
+      return ia - ib;
+    });
   }
 
   // 最终安全校验（双保险第二道）：

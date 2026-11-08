@@ -70,10 +70,14 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
-    // 异步启动
-    runChannelProbe(storage).catch((err) => {
-      console.error('[channel-probe-admin] Trigger error:', err);
-    });
+    // 异步启动：跑完自动重建一次，让新的排序立刻体现在订阅文件里
+    runChannelProbe(storage)
+      .then(() => {
+        if (triggerRefresh) return triggerRefresh();
+      })
+      .catch((err) => {
+        console.error('[channel-probe-admin] Trigger error:', err);
+      });
     return c.json({ success: true, message: 'Probe started' });
   });
 

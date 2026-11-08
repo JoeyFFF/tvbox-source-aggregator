@@ -175,6 +175,8 @@ async function main() {
       if (!(await isProbeEnabled(storage))) return;
       console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
       await runChannelProbe(storage);
+      // 测速完成后重建一次，否则新排序要等到下一次聚合才生效
+      await runWithGuard();
     } catch (err) {
       console.error('[channel-probe-cron] Error:', err);
     }

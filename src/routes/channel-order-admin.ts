@@ -19,6 +19,11 @@ import {
   defaultLiveGroupMerge,
   type LiveGroupMergeConfig,
 } from '../core/live-groups';
+import {
+  loadShoppingFilter,
+  saveShoppingFilter,
+  type ShoppingFilterConfig,
+} from '../core/live-filters';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
   const token = config.adminToken;
@@ -52,6 +57,46 @@ export function mountChannelOrderRoutes(app: Hono, deps: ChannelOrderRouteDeps):
       return [];
     }
   }
+
+  // GET / PUT /admin/live-use-config-lives — 是否采用配置源自带 lives
+  app.get('/admin/live-use-config-lives', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ enabled: (await storage.get('live_use_config_lives')) === 'true' });
+  });
+
+  app.put('/admin/live-use-config-lives', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const body = await c.req.json<{ enabled: boolean }>();
+    await storage.put('live_use_config_lives', body.enabled ? 'true' : 'false');
+    if (triggerRefresh) triggerRefresh().catch(() => {});
+    return c.json({ success: true, enabled: body.enabled });
+  });
+
+  // GET / PUT /admin/live-shopping — 购物台过滤
+  app.get('/admin/live-shopping', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json(await loadShoppingFilter(storage));
+  });
+
+  app.put('/admin/live-shopping', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: Partial<ShoppingFilterConfig>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const current = await loadShoppingFilter(storage);
+    const next: ShoppingFilterConfig = {
+      enabled: body.enabled !== undefined ? !!body.enabled : current.enabled,
+      keywords: Array.isArray(body.keywords)
+        ? body.keywords.filter((x): x is string => typeof x === 'string' && !!x.trim()).map((x) => x.trim())
+        : current.keywords,
+    };
+    await saveShoppingFilter(storage, next);
+    if (triggerRefresh) triggerRefresh().catch(() => {});
+    return c.json({ success: true, enabled: next.enabled, keywords: next.keywords.length });
+  });
 
   // GET /admin/live-groups — 分组归并规则
   app.get('/admin/live-groups', async (c) => {

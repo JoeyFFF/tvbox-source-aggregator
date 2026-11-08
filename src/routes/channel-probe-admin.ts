@@ -61,6 +61,19 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     return c.json({ success: true, enabled: body.enabled });
   });
 
+  // GET / PUT /admin/channel-probe/inline — 测速是否并入聚合流程
+  app.get('/admin/channel-probe/inline', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ enabled: (await storage.get('channel_probe_inline')) !== 'false' });
+  });
+
+  app.put('/admin/channel-probe/inline', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const body = await c.req.json<{ enabled: boolean }>();
+    await storage.put('channel_probe_inline', body.enabled ? 'true' : 'false');
+    return c.json({ success: true, enabled: body.enabled });
+  });
+
   // POST /admin/channel-probe/trigger — 手动触发（异步启动，不阻塞响应）
   app.post('/admin/channel-probe/trigger', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
@@ -70,10 +83,11 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
-    // 异步启动：跑完自动重建一次，让新的排序立刻体现在订阅文件里
+    // 异步启动；仅在「测速未并入聚合」时，跑完补一次重建让排序生效
+    const inline = (await storage.get('channel_probe_inline')) !== 'false';
     runChannelProbe(storage)
       .then(() => {
-        if (triggerRefresh) return triggerRefresh();
+        if (!inline && triggerRefresh) return triggerRefresh();
       })
       .catch((err) => {
         console.error('[channel-probe-admin] Trigger error:', err);

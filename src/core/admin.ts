@@ -393,6 +393,10 @@ ${sharedStyles}
           <input type="checkbox" id="channelProbeCheck" onchange="toggleChannelProbe()">
           <span data-i18n="channelProbeEnable">Enable scheduled channel speed test (every 2h)</span>
         </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="probeInlineCheck" onchange="saveProbeInline()">
+          <span data-i18n="probeInlineLabel">测速并入聚合流程（不再单独定时跑）</span>
+        </label>
         <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">Run Now</button>
         <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="refresh">Refresh</button>
         <button class="btn btn-sm btn-danger" id="channelProbeDropBtn" onclick="dropDeadSources()" data-i18n="channelProbeDropDead">Clean Dead Sources</button>
@@ -442,6 +446,31 @@ ${sharedStyles}
         每行一条「关键词=目标分组」，按顺序匹配，认不出的归入「其他」。只影响分组归属，不影响频道合并与测速排序。
       </div>
       <textarea id="groupMergeRules" spellcheck="false" style="width:100%;height:170px;font-family:var(--mono);font-size:0.78rem;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);resize:vertical"></textarea>
+    </div>
+
+    <!-- Live Channel Filter -->
+    <div class="section" id="liveFilterSection">
+      <div class="section-title" data-i18n="liveFilterTitle">频道过滤</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="shoppingFilterCheck" onchange="saveShoppingFilter()">
+          <span data-i18n="shoppingFilterLabel">自动删除购物台</span>
+        </label>
+        <button class="btn btn-sm" onclick="saveShoppingFilter()" data-i18n="channelOrderSave">保存排序</button>
+        <span class="status-text" id="shoppingFilterStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="shoppingFilterHint">
+        命中任一关键词的频道会被直接剔除（不参与合并与测速）。逗号分隔，注意别用「精选」这类会误伤音乐合辑的词。
+      </div>
+      <input id="shoppingKeywords" type="text" spellcheck="false"
+        style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="useConfigLivesCheck" onchange="saveUseConfigLives()">
+          <span data-i18n="useConfigLivesLabel">采用配置源自带的直播源（默认关闭，开了会掺入大量非电视条目）</span>
+        </label>
+        <span class="status-text" id="useConfigLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
     </div>
 
     <!-- Channel Order -->
@@ -706,10 +735,11 @@ ${sharedStyles}
         <span class="status-text" id="autoCleanStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="keepLinkCheck" onchange="saveKeepLink()">
-          <span data-i18n="keepLinkLabel">保留链接（不删除站点，仅跳过后续探测）</span>
-        </label>
+        <span style="font-size:0.82rem;color:var(--text-secondary)" data-i18n="autoCleanModeLabel">处理方式：</span>
+        <select id="autoCleanMode" class="nt-input" style="width:auto;min-width:220px" onchange="saveKeepLink()">
+          <option value="delete" data-i18n="autoCleanModeDelete">删除站点（从输出中移除）</option>
+          <option value="keep" data-i18n="autoCleanModeKeep">保留链接（仅跳过后续探测）</option>
+        </select>
         <button class="btn btn-sm" onclick="clearSkipList()" data-i18n="clearSkipBtn">清空跳过名单</button>
         <span class="status-text" id="keepLinkStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
@@ -800,6 +830,11 @@ const translations = {
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 2h)',
+    liveFilterTitle:'Channel Filter',
+    useConfigLivesLabel:'Use live sources bundled in config files (off by default; brings in lots of non-TV entries)',
+    shoppingFilterLabel:'Remove shopping channels automatically',
+    shoppingFilterHint:'Channels matching any keyword are dropped before merging and speed testing. Comma separated; avoid vague words like 精选.',
+    probeInlineLabel:'Run speed test inside aggregation (no separate schedule)',
     groupMergeTitle:'Group Merge',
     groupMergeEnable:'Merge messy groups into standard ones',
     groupMergeReset:'Reset rules',
@@ -838,7 +873,9 @@ const translations = {
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
     liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
-    keepLinkLabel:'Keep links (do not delete; just skip probing them later)',
+    autoCleanModeLabel:'Action:',
+    autoCleanModeDelete:'Delete site (remove from output)',
+    autoCleanModeKeep:'Keep link (skip probing only)',
     clearSkipBtn:'Clear skip list',
     skipCount:'Skipping {n} sites',
     clearSkipConfirm:'Clear the skip list? Skipped sites will be probed again.',
@@ -911,6 +948,11 @@ const translations = {
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 2 小时）',
+    liveFilterTitle:'频道过滤',
+    useConfigLivesLabel:'采用配置源自带的直播源（默认关闭，开了会掺入大量非电视条目）',
+    shoppingFilterLabel:'自动删除购物台',
+    shoppingFilterHint:'命中任一关键词的频道会被直接剔除（不参与合并与测速）。逗号分隔，注意别用「精选」这类会误伤音乐合辑的词。',
+    probeInlineLabel:'测速并入聚合流程（不再单独定时跑）',
     groupMergeTitle:'分组归并',
     groupMergeEnable:'启用分组归并（把各源的杂组收进标准分组）',
     groupMergeReset:'恢复默认规则',
@@ -949,7 +991,9 @@ const translations = {
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
     liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
-    keepLinkLabel:'保留链接（不删除站点，仅跳过后续探测）',
+    autoCleanModeLabel:'处理方式：',
+    autoCleanModeDelete:'删除站点（从输出中移除）',
+    autoCleanModeKeep:'保留链接（仅跳过后续探测）',
     clearSkipBtn:'清空跳过名单',
     skipCount:'正在跳过 {n} 个站点',
     clearSkipConfirm:'清空跳过名单？这些站点会重新参与探测',
@@ -1612,6 +1656,85 @@ async function restoreDeadSources() {
 }
 
 
+// --- 购物台过滤 ---
+let shoppingCfg = null;
+
+async function loadShoppingFilter() {
+  try {
+    const res = await auth.authFetch('/admin/live-shopping');
+    if (!res.ok) return;
+    shoppingCfg = await res.json();
+    const cb = $('shoppingFilterCheck');
+    if (cb) cb.checked = !!shoppingCfg.enabled;
+    const kw = $('shoppingKeywords');
+    if (kw) kw.value = (shoppingCfg.keywords || []).join(', ');
+  } catch (e) { /* ignore */ }
+}
+
+async function saveShoppingFilter() {
+  const kwEl = $('shoppingKeywords');
+  const keywords = kwEl ? kwEl.value.split(/[,，]/).map(function (x) { return x.trim(); }).filter(Boolean) : [];
+  const st = $('shoppingFilterStatus');
+  try {
+    const res = await auth.authFetch('/admin/live-shopping', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('shoppingFilterCheck').checked, keywords: keywords })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      st.textContent = t('saved') + ' (' + d.keywords + ')';
+      st.style.color = 'var(--success,#1D9E75)';
+    } else {
+      st.textContent = d.error || 'Failed';
+      st.style.color = 'var(--danger,#A32D2D)';
+    }
+  } catch (e) { st.textContent = t('networkError'); }
+}
+
+// --- 是否采用配置源 lives ---
+async function loadUseConfigLives() {
+  try {
+    const res = await auth.authFetch('/admin/live-use-config-lives');
+    if (!res.ok) return;
+    const d = await res.json();
+    const cb = $('useConfigLivesCheck');
+    if (cb) cb.checked = !!d.enabled;
+  } catch (e) { /* ignore */ }
+}
+
+async function saveUseConfigLives() {
+  try {
+    const res = await auth.authFetch('/admin/live-use-config-lives', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('useConfigLivesCheck').checked })
+    });
+    if (res.ok) $('useConfigLivesStatus').textContent = t('saved');
+  } catch (e) { /* ignore */ }
+}
+
+// --- 测速并入聚合 ---
+async function loadProbeInline() {
+  try {
+    const res = await auth.authFetch('/admin/channel-probe/inline');
+    if (!res.ok) return;
+    const d = await res.json();
+    const cb = $('probeInlineCheck');
+    if (cb) cb.checked = !!d.enabled;
+  } catch (e) { /* ignore */ }
+}
+
+async function saveProbeInline() {
+  try {
+    await auth.authFetch('/admin/channel-probe/inline', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('probeInlineCheck').checked })
+    });
+  } catch (e) { /* ignore */ }
+}
+
 // --- Live Group Merge (分组归并) ---
 let liveGroupData = null;
 
@@ -1673,8 +1796,8 @@ async function loadKeepLink() {
     const res = await auth.authFetch('/admin/site-keep-link');
     if (!res.ok) return;
     const d = await res.json();
-    const cb = $('keepLinkCheck');
-    if (cb) cb.checked = !!d.enabled;
+    const sel = $('autoCleanMode');
+    if (sel) sel.value = d.enabled ? 'keep' : 'delete';
     const st = $('keepLinkStatus');
     if (st) st.textContent = d.skipped > 0 ? t('skipCount').replace('{n}', d.skipped) : '';
   } catch (e) { /* ignore */ }
@@ -1685,7 +1808,7 @@ async function saveKeepLink() {
     const res = await auth.authFetch('/admin/site-keep-link', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: $('keepLinkCheck').checked })
+      body: JSON.stringify({ enabled: $('autoCleanMode').value === 'keep' })
     });
     if (res.ok) {
       $('keepLinkStatus').textContent = t('saved');
@@ -2614,6 +2737,9 @@ async function saveAutoClean() {
 loadLiveDisabled();
 loadLiveMergeMode();
 loadLiveGroups();
+loadShoppingFilter();
+loadUseConfigLives();
+loadProbeInline();
 loadChannelOrder();
 loadSmartBaseUrl();
 loadProbeDepth();

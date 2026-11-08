@@ -9,7 +9,7 @@
 import type { Storage } from '../storage/interface';
 import { KV_LIVE_DEAD_URLS } from './config';
 
-const MAX_ENTRIES = 50000;
+const MAX_ENTRIES = 300000;
 
 export async function loadDeadUrls(storage: Storage): Promise<string[]> {
   const raw = await storage.get(KV_LIVE_DEAD_URLS);

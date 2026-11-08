@@ -9,6 +9,7 @@ import type {
 import { TVBOX_UA, BROWSER_UA } from './config';
 import { splitUrlSource, bareUrl, joinUrlSource, compareBySpeed } from './live-url';
 import { normalizeGroupName, groupPriority, type LiveGroupMergeConfig } from './live-groups';
+import { isShoppingChannel, type ShoppingFilterConfig } from './live-filters';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -53,17 +54,55 @@ const SUFFIX_PATTERNS = [
   /\s*720p?$/i,
 ];
 
+/**
+ * 央视编号归一：各源的写法五花八门
+ *   CCTV-1 / CCTV 1 / CCTV1高清 / CCTV1综合 / CCTV1综合频道 → CCTV1
+ *   CCTV-5+体育 / CCTV5+ / CCTV5+体育赛事 → CCTV5+
+ *   CCTV4K / CCTV8K / CCTV16-4K 单独保留，不并入 CCTV4/8/16
+ */
+const CCTV_BRAND_SUFFIX = /(综合|财经|综艺|中文国际|体育赛事|体育|电影|国防军事|军事|电视剧|纪录|科教|戏曲|社会与法|新闻|少儿|音乐|农业农村|农业|高清|超清|频道)$/;
+
+function normalizeCctvName(s: string): string | null {
+  if (/^CCTV-?4K$/i.test(s)) return 'CCTV4K';
+  if (/^CCTV-?8K$/i.test(s)) return 'CCTV8K';
+  if (/^CCTV-?16-?4K$/i.test(s)) return 'CCTV16-4K';
+
+  const m = s.match(/^CCTV[-_]?(\d{1,2})([+\-]?)(.*)$/i);
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  if (!(num >= 1 && num <= 20)) return null;
+
+  const sep = m[2] || '';
+  let tail = (m[3] || '').replace(/^[-_\s]+/, '');
+
+  if (sep === '+') return `CCTV${num}+`;
+  tail = tail.replace(CCTV_BRAND_SUFFIX, '');
+  return tail ? `CCTV${num}${tail}` : `CCTV${num}`;
+}
+
+/** 央视中文台名 → 编号：央视一套 / 中央一台 → CCTV1 */
+const CN_NUM = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三', '十四', '十五', '十六', '十七'];
+
 function normalizeChannelName(raw: string): string {
   let s = raw.trim();
   // 繁→简
   let out = '';
   for (const ch of s) out += TRAD_SIMP_MAP[ch] || ch;
-  s = out;
+  s = out.replace(/\s+/g, '');
+
+  const cctv = normalizeCctvName(s);
+  if (cctv) return cctv;
+
+  // 央视一套 / 中央一台 / 央视13套
+  const cn = s.match(/^(央视|中央)([一二三四五六七八九十]+)套?台?$/);
+  if (cn) {
+    const idx = CN_NUM.indexOf(cn[2]);
+    if (idx >= 0) return `CCTV${idx + 1}`;
+  }
+
   // 去后缀
   for (const p of SUFFIX_PATTERNS) s = s.replace(p, '');
-  // 压空白
-  s = s.replace(/\s+/g, '').trim();
-  return s || raw.trim(); // 规范化空则退回原名
+  return s.trim() || raw.trim(); // 规范化空则退回原名
 }
 
 // ─── m3u/txt 解析 ──────────────────────────────────────
@@ -189,10 +228,27 @@ export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
  * 整份 txt 就会被误判成 m3u，解析结果为 0 个频道（真实源里确实出现过）。
  * 只认「行首」的 m3u 标记。
  */
+const MAX_ENTRIES_PER_SOURCE = 30000;
+
 export function parseLiveContent(content: string, source: string, sourceSpeedMs?: number): ChannelEntry[] {
   const head = content.replace(/^\uFEFF/, '').trimStart();
+
+  // 内容类型闸：有些源挂的 m3u 地址实际返回 HTML 或 JSON，
+  // 按 txt 解析会把页面里的链接全部当成频道（实测能炸出 43 万条垃圾条目）
+  if (!head) return [];
+  if (head.startsWith('<') || head.startsWith('{') || head.startsWith('[')) {
+    console.warn(`[live-merger] Skip non-playlist content from ${source} (starts with "${head.slice(0, 20)}")`);
+    return [];
+  }
+
   const isM3U = head.startsWith('#EXTM3U') || /^#EXTINF/m.test(head);
-  return isM3U ? parseM3U(content, source, sourceSpeedMs) : parseTxt(content, source, sourceSpeedMs);
+  const entries = isM3U ? parseM3U(content, source, sourceSpeedMs) : parseTxt(content, source, sourceSpeedMs);
+
+  if (entries.length > MAX_ENTRIES_PER_SOURCE) {
+    console.warn(`[live-merger] ${source} has ${entries.length} entries, truncated to ${MAX_ENTRIES_PER_SOURCE}`);
+    return entries.slice(0, MAX_ENTRIES_PER_SOURCE);
+  }
+  return entries;
 }
 
 // ─── 下载 m3u/txt ──────────────────────────────────────
@@ -253,12 +309,19 @@ export interface MergeLivesResult {
   sourcesFailed: number;
 }
 
+export interface LiveMergeOptions {
+  groupMerge?: LiveGroupMergeConfig;
+  shopping?: ShoppingFilterConfig;
+}
+
 export async function mergeLivesToNative(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
-  groupMerge?: LiveGroupMergeConfig,
+  opts?: LiveMergeOptions,
 ): Promise<MergeLivesResult> {
+  const groupMerge = opts?.groupMerge;
+  const shopping = opts?.shopping;
   if (sources.length === 0) {
     return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
   }
@@ -279,7 +342,10 @@ export async function mergeLivesToNative(
       sourcesDownloaded++;
       try {
         const entries = parseLiveContent(r.value.content, r.value.input.name, r.value.input.speedMs);
-        allEntries.push(...entries);
+        for (const e of entries) {
+          if (isShoppingChannel(e.name, shopping)) continue;
+          allEntries.push(e);
+        }
       } catch (err) {
         console.warn(`[live-merger] Parse failed for ${r.value.input.name}: ${err}`);
       }
@@ -296,8 +362,9 @@ export async function mergeLivesToNative(
   // 按频道名（规范化）+ group 合并 urls
   // key: normalizedName → { group, rawName, logo, urls: Map<url, ChannelEntry> }
   interface AggChannel {
-    group: string;        // 使用第一次出现的 group 名
-    rawName: string;      // 使用第一次出现的 raw name（最常用的）
+    group: string;              // 出现次数最多的分组（多数决），平票时取标准分组优先级更高的
+    groupVotes: Map<string, number>;
+    rawName: string;            // 使用第一次出现的 raw name（最常用的）
     logo?: string;
     urls: Map<string, ChannelEntry>; // url → entry（含源名、速度）
   }
@@ -315,14 +382,25 @@ export async function mergeLivesToNative(
     if (!agg) {
       agg = {
         group: groupName,
+        groupVotes: new Map([[groupName, 1]]),
         rawName: e.name,
         logo: e.logo,
         urls: new Map(),
       };
       channelMap.set(normName, agg);
-    } else if (groupMerge?.enabled && groupPriority(groupName, groupMerge) < groupPriority(agg.group, groupMerge)) {
-      // 同一个台出现在多个分组：归到最具体的那个（央视 > 卫视 > 其他）
-      agg.group = groupName;
+    } else {
+      // 多数决：同一个台被不同源标到不同分组时，信"票数最多的那个"
+      // （避免某个源把「东方卫视」错标进央视，整台就被拽到央视）
+      agg.groupVotes.set(groupName, (agg.groupVotes.get(groupName) || 0) + 1);
+      let best = agg.group;
+      let bestVotes = agg.groupVotes.get(best) || 0;
+      for (const [g, v] of agg.groupVotes) {
+        if (v > bestVotes) { best = g; bestVotes = v; continue; }
+        if (v === bestVotes && groupMerge?.enabled && groupPriority(g, groupMerge) < groupPriority(best, groupMerge)) {
+          best = g;
+        }
+      }
+      agg.group = best;
     }
     if (!agg.urls.has(e.url)) {
       agg.urls.set(e.url, e);

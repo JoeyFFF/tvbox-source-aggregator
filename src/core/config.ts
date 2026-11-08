@@ -66,7 +66,10 @@ export const KV_LIVE_DEAD_URLS = 'live_dead_urls';
 export const KV_LIVE_CHANNEL_ORDER = 'live_channel_order'; // 分组内频道自定义顺序
 export const KV_LIVE_GROUP_MERGE = 'live_group_merge';     // 直播分组归并规则
 export const KV_SITE_KEEP_LINK = 'site_keep_link';         // 不可达剔除时是否保留链接（true=仅跳过探测）
-export const KV_SITE_SKIP_LIST = 'site_skip_list';         // 保留模式下被跳过的站点指纹           // 手动「清理死源」后持久化的黑名单（源恢复后自动移出）
+export const KV_SITE_SKIP_LIST = 'site_skip_list';         // 保留模式下被跳过的站点指纹
+export const KV_LIVE_SHOPPING_FILTER = 'live_shopping_filter'; // 购物台过滤（开关 + 关键词）
+export const KV_CHANNEL_PROBE_INLINE = 'channel_probe_inline'; // 频道测速是否并入聚合流程
+export const KV_LIVE_USE_CONFIG_LIVES = 'live_use_config_lives'; // 是否采用配置源自带的 lives（默认否）           // 手动「清理死源」后持久化的黑名单（源恢复后自动移出）
 
 // 聚合日志
 export const KV_AGG_LOGS = 'agg_logs';

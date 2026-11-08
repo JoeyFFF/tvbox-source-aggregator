@@ -115,7 +115,7 @@ async function main() {
   const config = await buildConfig(port);
 
   let refreshRunning = false;
-  const AGGREGATION_TIMEOUT_MS = 300_000; // 聚合整体超时 5 分钟
+  const AGGREGATION_TIMEOUT_MS = 45 * 60 * 1000; // 聚合整体超时 45 分钟（含内联频道测速）
 
   const runWithGuard = async () => {
     if (refreshRunning) {
@@ -173,6 +173,8 @@ async function main() {
   cron.schedule(CHANNEL_PROBE_CRON, async () => {
     try {
       if (!(await isProbeEnabled(storage))) return;
+      // 测速已并入聚合流程时，这条独立 cron 不再重复跑
+      if ((await storage.get('channel_probe_inline')) !== 'false') return;
       console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
       await runChannelProbe(storage);
       // 测速完成后重建一次，否则新排序要等到下一次聚合才生效

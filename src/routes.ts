@@ -166,7 +166,7 @@ export function createApp(deps: AppDeps): Hono {
             if (groups.length > 0) {
               return c.body(formatLiveGroupsAsTxt(groups), 200, {
                 'Content-Type': 'text/plain; charset=utf-8',
-                'Cache-Control': 'public, max-age=1800',
+                'Cache-Control': 'public, max-age=300',
                 'Access-Control-Allow-Origin': '*',
               });
             }
@@ -182,7 +182,7 @@ export function createApp(deps: AppDeps): Hono {
 
       return c.body(formatLiveGroupsAsTxt(lives), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800',
+        'Cache-Control': 'public, max-age=300',
         'Access-Control-Allow-Origin': '*',
       });
     } catch {
@@ -1845,7 +1845,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // 频道级测速 admin 路由（仅 Node/Docker 启用）
   if (deps.enableChannelProbe) {
-    mountChannelProbeRoutes(app, { storage, config });
+    mountChannelProbeRoutes(app, { storage, config, triggerRefresh: deps.triggerRefresh });
   }
 
   // Builder 路由（仅 Node/Docker 启用，动态 import 避免 CF bundle 引入 fs/path）

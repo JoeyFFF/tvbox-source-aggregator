@@ -258,6 +258,8 @@ export interface ChannelSpeedEntry {
   speedMs: number;          // TTFB 或连通耗时
   probedAt: string;         // ISO 时间
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
+  fails?: number;           // 连续失败轮数（成功即清零），>= CHANNEL_DEAD_FAILS 视为死链
+  samples?: number;         // 本轮有效样本数
 }
 export type ChannelSpeedMap = Record<string, ChannelSpeedEntry>;
 
@@ -281,7 +283,7 @@ export interface RegexRule {
 }
 
 // 频道测速任务状态
-export type ChannelProbeState = 'idle' | 'running' | 'done' | 'error';
+export type ChannelProbeState = 'idle' | 'running' | 'done' | 'partial' | 'error';
 
 export interface ChannelProbeStatus {
   state: ChannelProbeState;
@@ -293,6 +295,8 @@ export interface ChannelProbeStatus {
   success: number;           // 成功
   failed: number;            // 超时/失败
   totalChannels: number;     // 合并后频道数
-  coverage: number;          // 覆盖率（success/totalUrls，百分比）
+  coverage: number;          // 覆盖率（可用 URL / totalUrls，百分比）
+  pending?: number;          // 本轮因预算未测完、留给下一轮的数量
+  dead?: number;             // 连续失败达到阈值、已判定死链的数量
   error?: string;
 }

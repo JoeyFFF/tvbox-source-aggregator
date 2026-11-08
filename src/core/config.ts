@@ -62,6 +62,7 @@ export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 最近一次合并的频道树（供 probe 使用）
+export const KV_LIVE_DEAD_URLS = 'live_dead_urls';           // 手动「清理死源」后持久化的黑名单（源恢复后自动移出）
 
 // 聚合日志
 export const KV_AGG_LOGS = 'agg_logs';
@@ -94,10 +95,16 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 // Builder 源追踪
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
 
-// 频道测速 cron：每 12 小时
-export const CHANNEL_PROBE_CRON = '0 */12 * * *';
-// 并发与超时
-export const CHANNEL_PROBE_CONCURRENCY = 50;
+// 频道测速 cron：每 2 小时（只重测缓存已过期的 URL，不会全量重刷）
+export const CHANNEL_PROBE_CRON = '0 */2 * * *';
+// 并发与超时（1.6 万 URL 全量一轮，100 并发 ≈ 10 分钟量级）
+export const CHANNEL_PROBE_CONCURRENCY = 100;
 export const CHANNEL_PROBE_TIMEOUT_MS = 5000;
-// 缓存过期（7 天）
-export const CHANNEL_SPEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// 每个 URL 采样次数（取成功样本的中位数，降低单次抖动）
+export const CHANNEL_PROBE_SAMPLES = 2;
+// 单轮测速预算：超时后剩余 URL 留给下一轮（避免 1.6 万 URL 一次跑不完）
+export const CHANNEL_PROBE_BUDGET_MS = 20 * 60 * 1000;
+// 缓存过期（6 小时）：过期即重测，保证排序不会基于一周前的数据
+export const CHANNEL_SPEED_TTL_MS = 6 * 60 * 60 * 1000;
+// 连续失败多少轮后判定为「死链」（排到该频道末尾，不直接删除）
+export const CHANNEL_DEAD_FAILS = 2;

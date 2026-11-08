@@ -391,10 +391,12 @@ ${sharedStyles}
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="channelProbeCheck" onchange="toggleChannelProbe()">
-          <span data-i18n="channelProbeEnable">Enable scheduled channel speed test (every 12h)</span>
+          <span data-i18n="channelProbeEnable">Enable scheduled channel speed test (every 2h)</span>
         </label>
         <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">Run Now</button>
         <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="refresh">Refresh</button>
+        <button class="btn btn-sm btn-danger" id="channelProbeDropBtn" onclick="dropDeadSources()" data-i18n="channelProbeDropDead">Clean Dead Sources</button>
+        <button class="btn btn-sm" id="channelProbeRestoreBtn" style="display:none" onclick="restoreDeadSources()" data-i18n="channelProbeRestoreDead">Restore</button>
       </div>
       <div id="channelProbeStatus" style="font-size:0.85rem;color:var(--text-secondary);line-height:1.6"></div>
     </div>
@@ -751,8 +753,17 @@ const translations = {
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Other Sources',
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
-    channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
+    channelProbeEnable:'Enable scheduled channel speed test (every 2h)',
     channelProbeTrigger:'Run Now',
+    channelProbeDropDead:'Clean Dead Sources',
+    channelProbeRestoreDead:'Restore',
+    channelProbeRestoreConfirm:'Clear the dead-source blacklist and re-aggregate?',
+    channelProbeRestored:'Restored {n} sources',
+    channelProbePartial:'Partial (budget reached, continues next round)',
+    channelProbePending:'Left for next round',
+    channelProbeDeadListed:'Dead source blacklist',
+    channelProbeDropConfirm:'Delete all sources that failed the speed test from the output? They are added to a dead-source blacklist and auto-restored if they come back.',
+    channelProbeDropped:'Removed {n} dead sources',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
     channelProbeChannels:'Channels', channelProbeDuration:'Duration', channelProbeFinished:'Finished at',
@@ -827,8 +838,17 @@ const translations = {
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'其他源',
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
-    channelProbeEnable:'启用定时频道测速（每 12 小时）',
+    channelProbeEnable:'启用定时频道测速（每 2 小时）',
     channelProbeTrigger:'立即执行',
+    channelProbeDropDead:'清理死源',
+    channelProbeRestoreDead:'恢复死源',
+    channelProbeRestoreConfirm:'清空死源黑名单并重新聚合？',
+    channelProbeRestored:'已恢复 {n} 个源',
+    channelProbePartial:'部分完成（超出预算，下轮继续）',
+    channelProbePending:'留给下轮',
+    channelProbeDeadListed:'死源黑名单',
+    channelProbeDropConfirm:'把测速失败的源从输出中删除？（会加入死源黑名单长期生效；源恢复可用后会自动放回来）',
+    channelProbeDropped:'已清理 {n} 个死源',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
     channelProbeChannels:'频道数', channelProbeDuration:'耗时', channelProbeFinished:'完成时间',
@@ -1391,14 +1411,22 @@ async function loadChannelProbe() {
     const d = await res.json();
     $('channelProbeCheck').checked = !!d.enabled;
     const s = d.status || {};
-    const stateLabel = { idle: t('channelProbeIdle'), running: t('channelProbeRunning'), done: t('channelProbeDone'), error: t('channelProbeError') }[s.state] || s.state || '-';
+    const stateLabel = { idle: t('channelProbeIdle'), running: t('channelProbeRunning'), done: t('channelProbeDone'), partial: t('channelProbePartial'), error: t('channelProbeError') }[s.state] || s.state || '-';
     const lines = [];
     lines.push(t('channelProbeState') + ': ' + stateLabel + (d.running ? ' ⏳' : ''));
     if (s.totalUrls) {
       lines.push(t('channelProbeProgress') + ': ' + (s.probed || 0) + ' / ' + s.totalUrls + ' | ' + t('channelProbeCoverage') + ': ' + (s.coverage || 0) + '% | ' + t('channelProbeChannels') + ': ' + (s.totalChannels || 0));
     }
+    if (s.pending) {
+      lines.push(t('channelProbePending') + ': ' + s.pending);
+    }
     if (s.durationMs) {
       lines.push(t('channelProbeDuration') + ': ' + (s.durationMs / 1000).toFixed(1) + 's');
+    }
+    const restoreBtn = $('channelProbeRestoreBtn');
+    if (restoreBtn) restoreBtn.style.display = (d.deadListed > 0) ? '' : 'none';
+    if (typeof d.deadListed === 'number' && d.deadListed > 0) {
+      lines.push(t('channelProbeDeadListed') + ': ' + d.deadListed);
     }
     if (s.finishedAt) {
       lines.push(t('channelProbeFinished') + ': ' + new Date(s.finishedAt).toLocaleString());
@@ -1443,6 +1471,42 @@ async function triggerChannelProbe() {
     toast(t('networkError'), 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function dropDeadSources() {
+  const btn = $('channelProbeDropBtn');
+  if (!confirm(t('channelProbeDropConfirm'))) return;
+  btn.disabled = true;
+  try {
+    const res = await auth.authFetch('/admin/channel-probe/drop-dead', { method: 'POST' });
+    const d = await res.json();
+    if (res.ok) {
+      toast(t('channelProbeDropped').replace('{n}', d.removed ?? 0));
+      setTimeout(loadChannelProbe, 500);
+    } else {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch {
+    toast(t('networkError'), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function restoreDeadSources() {
+  if (!confirm(t('channelProbeRestoreConfirm'))) return;
+  try {
+    const res = await auth.authFetch('/admin/channel-probe/drop-dead', { method: 'DELETE' });
+    const d = await res.json();
+    if (res.ok) {
+      toast(t('channelProbeRestored').replace('{n}', d.cleared ?? 0));
+      setTimeout(loadChannelProbe, 500);
+    } else {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch {
+    toast(t('networkError'), 'error');
   }
 }
 

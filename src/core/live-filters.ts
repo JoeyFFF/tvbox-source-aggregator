@@ -24,6 +24,12 @@ export const DEFAULT_SHOPPING_KEYWORDS = [
   '居家购物',
   '电视购物',
   '购物频道',
+  // 推广/乞讨类频道（实测源里有「支持作者」这种）
+  '支持作者',
+  '打赏',
+  '赞助',
+  '加群',
+  '公众号',
 ];
 
 export function defaultShoppingFilter(): ShoppingFilterConfig {

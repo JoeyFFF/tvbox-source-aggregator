@@ -454,7 +454,7 @@ ${sharedStyles}
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="shoppingFilterCheck" onchange="saveShoppingFilter()">
-          <span data-i18n="shoppingFilterLabel">自动删除购物台</span>
+          <span data-i18n="shoppingFilterLabel">自动删除购物/推广频道</span>
         </label>
         <button class="btn btn-sm" onclick="saveShoppingFilter()" data-i18n="channelOrderSave">保存排序</button>
         <span class="status-text" id="shoppingFilterStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
@@ -574,16 +574,40 @@ ${sharedStyles}
       </div>
     </div>
 
-    <div class="section">
-      <div class="section-title" data-i18n="speedTestToggle">Site Speed Test</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <div class="section" id="ftpSyncSection">
+      <div class="section-title" data-i18n="ftpTitle">对外发布（FTP 同步）</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="speedTestCheck" onchange="saveSpeedTest()" checked>
-          <span data-i18n="speedTestLabel">Enable site speed test and unreachable filtering</span>
+          <input type="checkbox" id="ftpEnabled" onchange="saveFtpSync()">
+          <span data-i18n="ftpEnable">每次聚合完成后，把 live.txt 覆盖上传到 FTP</span>
         </label>
-        <span class="status-text" id="speedTestStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+        <span class="status-text" id="ftpStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="speedTestDesc">When disabled, all sites are kept without testing reachability</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
+        <div><label class="form-label" data-i18n="ftpHost">FTP 主机</label>
+          <input id="ftpHost" class="nt-input" placeholder="ftp.example.com"></div>
+        <div><label class="form-label" data-i18n="ftpPort">端口</label>
+          <input id="ftpPort" class="nt-input" placeholder="21" value="21"></div>
+        <div><label class="form-label" data-i18n="ftpUser">用户名</label>
+          <input id="ftpUser" class="nt-input" autocomplete="off"></div>
+        <div><label class="form-label" data-i18n="ftpPass">密码</label>
+          <input id="ftpPass" class="nt-input" type="password" autocomplete="new-password" placeholder="留空则不修改"></div>
+        <div><label class="form-label" data-i18n="ftpPath">远端路径</label>
+          <input id="ftpPath" class="nt-input" placeholder="/wwwroot/live.txt" value="/live.txt"></div>
+        <div><label class="form-label" data-i18n="ftpPublic">对外访问地址</label>
+          <input id="ftpPublic" class="nt-input" placeholder="https://xx.com/live.txt"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem">
+          <input type="checkbox" id="ftpSecure"> <span data-i18n="ftpSecure">使用 FTPS（显式 TLS）</span>
+        </label>
+        <button class="btn btn-sm" onclick="saveFtpSync()" data-i18n="save">保存</button>
+        <button class="btn btn-sm" onclick="testFtpSync()" data-i18n="ftpTest">测试连接</button>
+        <button class="btn btn-sm" onclick="runFtpSync()" data-i18n="ftpRunNow">立即上传</button>
+      </div>
+      <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px" data-i18n="ftpHint">
+        上传的是与 /live.txt 完全相同的内容（测速排序后的 DIYP 格式）。密码以明文存在本地数据库，建议单独建一个只对目标目录有写权限的 FTP 账号。
+      </div>
     </div>
 
     <div class="section">
@@ -716,9 +740,17 @@ ${sharedStyles}
       </div>
     </div>
 
-    <!-- 站点验活 -->
+    <!-- 站点测速与验活（一个功能，三个层级：总开关 → 验活深度 → 清理策略） -->
     <div class="section">
-      <div class="section-title" data-i18n="siteProbeTitle">Site Probe &amp; Auto Clean</div>
+      <div class="section-title" data-i18n="siteProbeTitle">Site Speed Test &amp; Auto Clean</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="speedTestCheck" onchange="saveSpeedTest()" checked>
+          <span data-i18n="speedTestLabel">启用站点测速与不可达剔除</span>
+        </label>
+        <span class="status-text" id="speedTestStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:8px" data-i18n="speedTestDesc">关闭后保留所有站点，不进行可达性检测，下面的验活与清理策略同时失效。</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <label class="form-label" style="margin:0" data-i18n="probeDepthLabel">Probe depth:</label>
         <select id="probeDepthSelect" class="nt-input" style="width:auto;min-width:140px" onchange="saveProbeDepth()">
@@ -832,7 +864,7 @@ const translations = {
     channelProbeEnable:'Enable scheduled channel speed test (every 2h)',
     liveFilterTitle:'Channel Filter',
     useConfigLivesLabel:'Use live sources bundled in config files (off by default; brings in lots of non-TV entries)',
-    shoppingFilterLabel:'Remove shopping channels automatically',
+    shoppingFilterLabel:'Remove shopping / promo channels automatically',
     shoppingFilterHint:'Channels matching any keyword are dropped before merging and speed testing. Comma separated; avoid vague words like 精选.',
     probeInlineLabel:'Run speed test inside aggregation (no separate schedule)',
     groupMergeTitle:'Group Merge',
@@ -880,7 +912,16 @@ const translations = {
     skipCount:'Skipping {n} sites',
     clearSkipConfirm:'Clear the skip list? Skipped sites will be probed again.',
     clearSkipDone:'Skip list cleared',
-    siteProbeTitle:'Site Probe & Auto Clean', probeDepthLabel:'Probe depth:',
+    ftpTitle:'Publish (FTP sync)',
+    ftpEnable:'Upload live.txt to FTP after each aggregation',
+    ftpHost:'FTP host', ftpPort:'Port', ftpUser:'Username', ftpPass:'Password',
+    ftpPath:'Remote path', ftpPublic:'Public URL', ftpSecure:'Use FTPS (explicit TLS)',
+    ftpTest:'Test connection', ftpRunNow:'Upload now',
+    ftpHint:'Uploads exactly what /live.txt returns (speed-sorted DIYP format). Password is stored in plain text; use a dedicated write-only FTP account.',
+    ftpPassKeep:'leave blank to keep', ftpTesting:'Testing...', ftpTestOk:'Connection OK',
+    ftpTestFail:'Connection failed', ftpUploading:'Uploading...',
+    ftpUploadOk:'Uploaded {n} bytes', ftpUploadFail:'Upload failed',
+    siteProbeTitle:'Site Speed Test & Auto Clean', probeDepthLabel:'Probe depth:',
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
@@ -950,8 +991,8 @@ const translations = {
     channelProbeEnable:'启用定时频道测速（每 2 小时）',
     liveFilterTitle:'频道过滤',
     useConfigLivesLabel:'采用配置源自带的直播源（默认关闭，开了会掺入大量非电视条目）',
-    shoppingFilterLabel:'自动删除购物台',
-    shoppingFilterHint:'命中任一关键词的频道会被直接剔除（不参与合并与测速）。逗号分隔，注意别用「精选」这类会误伤音乐合辑的词。',
+    shoppingFilterLabel:'自动删除购物/推广频道',
+    shoppingFilterHint:'命中任一关键词的频道会被直接剔除（不参与合并与测速）。逗号分隔；注意别用「精选」这类会误伤音乐合辑的词。',
     probeInlineLabel:'测速并入聚合流程（不再单独定时跑）',
     groupMergeTitle:'分组归并',
     groupMergeEnable:'启用分组归并（把各源的杂组收进标准分组）',
@@ -998,7 +1039,16 @@ const translations = {
     skipCount:'正在跳过 {n} 个站点',
     clearSkipConfirm:'清空跳过名单？这些站点会重新参与探测',
     clearSkipDone:'跳过名单已清空',
-    siteProbeTitle:'站点验活与自动清理', probeDepthLabel:'验活深度：',
+    ftpTitle:'对外发布（FTP 同步）',
+    ftpEnable:'每次聚合完成后，把 live.txt 覆盖上传到 FTP',
+    ftpHost:'FTP 主机', ftpPort:'端口', ftpUser:'用户名', ftpPass:'密码',
+    ftpPath:'远端路径', ftpPublic:'对外访问地址', ftpSecure:'使用 FTPS（显式 TLS）',
+    ftpTest:'测试连接', ftpRunNow:'立即上传',
+    ftpHint:'上传的是与 /live.txt 完全相同的内容（测速排序后的 DIYP 格式）。密码以明文存在本地数据库，建议单独建一个只对目标目录有写权限的 FTP 账号。',
+    ftpPassKeep:'留空则不修改', ftpTesting:'测试中...', ftpTestOk:'连接成功',
+    ftpTestFail:'连接失败', ftpUploading:'上传中...',
+    ftpUploadOk:'已上传 {n} 字节', ftpUploadFail:'上传失败',
+    siteProbeTitle:'站点测速与验活', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
@@ -1655,6 +1705,72 @@ async function restoreDeadSources() {
   }
 }
 
+
+// --- FTP 对外发布 ---
+async function loadFtpSync() {
+  try {
+    const res = await auth.authFetch('/admin/ftp-sync');
+    if (!res.ok) return;
+    const d = await res.json();
+    $('ftpEnabled').checked = !!d.enabled;
+    $('ftpHost').value = d.host || '';
+    $('ftpPort').value = d.port || 21;
+    $('ftpUser').value = d.user || '';
+    $('ftpPath').value = d.remotePath || '/live.txt';
+    $('ftpPublic').value = d.publicUrl || '';
+    $('ftpSecure').checked = !!d.secure;
+    $('ftpPass').value = '';
+    $('ftpPass').placeholder = d.hasPassword ? t('ftpPassKeep') : '';
+  } catch (e) { /* ignore */ }
+}
+
+function ftpFormBody() {
+  return JSON.stringify({
+    enabled: $('ftpEnabled').checked,
+    host: $('ftpHost').value.trim(),
+    port: parseInt($('ftpPort').value) || 21,
+    user: $('ftpUser').value.trim(),
+    password: $('ftpPass').value,
+    remotePath: $('ftpPath').value.trim() || '/live.txt',
+    publicUrl: $('ftpPublic').value.trim(),
+    secure: $('ftpSecure').checked
+  });
+}
+
+async function saveFtpSync() {
+  const st = $('ftpStatus');
+  try {
+    const res = await auth.authFetch('/admin/ftp-sync', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: ftpFormBody()
+    });
+    if (res.ok) { st.textContent = t('saved'); st.style.color = 'var(--success,#1D9E75)'; setTimeout(loadFtpSync, 800); }
+    else { st.textContent = 'Failed'; st.style.color = 'var(--danger,#A32D2D)'; }
+  } catch (e) { st.textContent = t('networkError'); }
+}
+
+async function testFtpSync() {
+  const st = $('ftpStatus');
+  st.textContent = t('ftpTesting');
+  try {
+    const res = await auth.authFetch('/admin/ftp-sync/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ftpFormBody()
+    });
+    const d = await res.json();
+    if (d.ok) { st.textContent = t('ftpTestOk'); st.style.color = 'var(--success,#1D9E75)'; }
+    else { st.textContent = t('ftpTestFail') + ': ' + (d.error || ''); st.style.color = 'var(--danger,#A32D2D)'; }
+  } catch (e) { st.textContent = t('networkError'); }
+}
+
+async function runFtpSync() {
+  const st = $('ftpStatus');
+  st.textContent = t('ftpUploading');
+  try {
+    const res = await auth.authFetch('/admin/ftp-sync/run', { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) { st.textContent = t('ftpUploadOk').replace('{n}', d.bytes || 0); st.style.color = 'var(--success,#1D9E75)'; }
+    else { st.textContent = t('ftpUploadFail') + ': ' + (d.error || ''); st.style.color = 'var(--danger,#A32D2D)'; }
+  } catch (e) { st.textContent = t('networkError'); }
+}
 
 // --- 购物台过滤 ---
 let shoppingCfg = null;
@@ -2745,6 +2861,7 @@ loadSmartBaseUrl();
 loadProbeDepth();
 loadAutoClean();
 loadKeepLink();
+loadFtpSync();
 
 applyTheme(getTheme());
 initThemeDropdown();

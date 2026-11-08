@@ -27,6 +27,7 @@ import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TV
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { mountChannelOrderRoutes } from './routes/channel-order-admin';
 import { loadSkipList, clearSkipList } from './core/site-skip';
+import { loadFtpConfig, saveFtpConfig, testFtpConnection, uploadLiveTxt, type FtpSyncConfig } from './core/ftp-sync';
 
 export interface AppDeps {
   storage: Storage;
@@ -1861,6 +1862,69 @@ export function createApp(deps: AppDeps): Hono {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     await clearSkipList(storage);
     return c.json({ success: true });
+  });
+
+  // ─── FTP 对外发布 ───────────────────────────────────
+  app.get('/admin/ftp-sync', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const cfg = await loadFtpConfig(storage);
+    const { password, ...rest } = cfg;
+    return c.json({ ...rest, hasPassword: !!password });
+  });
+
+  app.put('/admin/ftp-sync', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const body = await c.req.json<Partial<FtpSyncConfig>>();
+    const current = await loadFtpConfig(storage);
+    const next: FtpSyncConfig = {
+      enabled: body.enabled !== undefined ? !!body.enabled : current.enabled,
+      host: (body.host ?? current.host).trim(),
+      port: Number(body.port) > 0 ? Number(body.port) : current.port,
+      user: (body.user ?? current.user).trim(),
+      // 密码留空表示不修改
+      password: body.password ? body.password : current.password,
+      remotePath: (body.remotePath ?? current.remotePath) || '/live.txt',
+      secure: body.secure !== undefined ? !!body.secure : current.secure,
+      publicUrl: (body.publicUrl ?? current.publicUrl).trim(),
+    };
+    await saveFtpConfig(storage, next);
+    return c.json({ success: true, enabled: next.enabled });
+  });
+
+  app.post('/admin/ftp-sync/test', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const body = await c.req.json<Partial<FtpSyncConfig>>();
+    const current = await loadFtpConfig(storage);
+    const cfg: FtpSyncConfig = {
+      ...current,
+      ...body,
+      password: body.password ? body.password : current.password,
+      host: (body.host ?? current.host).trim(),
+      user: (body.user ?? current.user).trim(),
+      port: Number(body.port) > 0 ? Number(body.port) : current.port,
+    } as FtpSyncConfig;
+    if (!cfg.host || !cfg.user) return c.json({ ok: false, error: '请先填写主机和用户名' });
+    const res = await testFtpConnection(cfg);
+    return c.json(res);
+  });
+
+  app.post('/admin/ftp-sync/run', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const cfg = await loadFtpConfig(storage);
+    if (!cfg.host || !cfg.user) return c.json({ ok: false, error: 'FTP 未配置' });
+
+    const raw = await storage.get(KV_MERGED_CONFIG);
+    if (!raw) return c.json({ ok: false, error: '还没有生成过配置，请先刷新一次' });
+    try {
+      const full = JSON.parse(raw);
+      const lives = Array.isArray(full.lives) ? full.lives : [];
+      if (lives.length === 0) return c.json({ ok: false, error: '当前没有直播数据' });
+      const txt = formatLiveGroupsAsTxt(lives as unknown as TVBoxLiveGroup[]);
+      const res = await uploadLiveTxt(cfg, txt);
+      return c.json(res);
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   app.get('/admin/site-health', async (c) => {

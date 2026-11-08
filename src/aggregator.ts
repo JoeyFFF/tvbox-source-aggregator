@@ -7,11 +7,12 @@ import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, type LiveSourceInput } from './core/live-merger';
 import { loadDeadUrls } from './core/live-deadlist';
 import { loadChannelOrder, applyChannelOrder } from './core/live-order';
 import { loadLiveGroupMerge } from './core/live-groups';
 import { loadShoppingFilter } from './core/live-filters';
+import { loadFtpConfig, uploadLiveTxt } from './core/ftp-sync';
 import { loadSkipList, addSkipList } from './core/site-skip';
 import { bareUrl } from './core/live-url';
 import { loadSpeedMap as loadChannelSpeedMap, runChannelProbe } from './core/channel-probe';
@@ -27,7 +28,7 @@ import { injectCredentials } from './core/credential-injector';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
-import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
+import type { NameTransformConfig, EdgeProxyConfig, TVBoxLiveGroup } from './core/types';
 
 export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
   const startTime = Date.now();
@@ -600,6 +601,24 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const mergedJson = JSON.stringify(merged);
   await storage.put(KV_MERGED_CONFIG, mergedJson);
   await storage.put(KV_LAST_UPDATE, new Date().toISOString());
+
+  // Step 8.5: 对外发布——把最新的 live.txt 覆盖上传到 FTP（失败不影响聚合结果）
+  if (!config.workerBaseUrl && Array.isArray(merged.lives) && merged.lives.length > 0) {
+    try {
+      const ftpCfg = await loadFtpConfig(storage);
+      if (ftpCfg.enabled && ftpCfg.host) {
+        const txt = formatLiveGroupsAsTxt(merged.lives as unknown as TVBoxLiveGroup[]);
+        const res = await uploadLiveTxt(ftpCfg, txt);
+        if (res.ok) {
+          logger.infoFields('aggregation', 'ftp-published', { bytes: res.bytes, path: ftpCfg.remotePath });
+        } else {
+          logger.warn('aggregation', `ftp publish failed: ${res.error}`);
+        }
+      }
+    } catch (err) {
+      logger.warn('aggregation', `ftp publish error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   logger.infoFields('aggregation', 'done', {

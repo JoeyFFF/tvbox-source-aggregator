@@ -10,6 +10,7 @@ import {
   validateLiveUrlBlacklist,
 } from '../core/live-url-blacklist';
 import { validateRegexRule } from '../core/blacklist';
+import { stripFailurePrefix } from '../core/channel-health';
 import { liveUrlBlacklistHtml } from '../core/live-url-blacklist-ui';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
@@ -32,7 +33,7 @@ function liveValues(groups: TVBoxLiveGroup[], field: 'url' | 'source' | 'name' |
         continue;
       }
       if (field === 'name') {
-        values.push({ value: String(ch.name || '').replace(/^\[失效\]\s*/, ''), group: g.group || '', name: ch.name || '' });
+        values.push({ value: stripFailurePrefix(String(ch.name || '')), group: g.group || '', name: ch.name || '' });
         continue;
       }
       for (const raw of ch.urls || []) {

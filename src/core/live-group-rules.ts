@@ -1,4 +1,5 @@
 // 直播分组规则：管理端保存到 KV，合并时读取；改规则只需 refresh，不用重启。
+import { isFailedChannelName, stripFailurePrefix } from './channel-health';
 import {
   DEFAULT_BUILTIN_RULES,
   normalizeBuiltinRuleConfig,
@@ -306,7 +307,7 @@ const LIVE_SORT_COLLATOR = (() => {
 })();
 
 export function stripFailedPrefix(name: string): string {
-  return String(name ?? '').replace(/^\[失效\]\s*/, '');
+  return stripFailurePrefix(String(name ?? ''));
 }
 
 /** 英文/数字开头的频道排在汉字、假名、韩文之前（中文区常见的文件排序习惯）。 */
@@ -315,7 +316,7 @@ function leadingScriptRank(name: string): number {
   return cp < 0x2e80 ? 0 : 1;
 }
 
-/** 显示名比较：英文/数字在前，中文按拼音、数字按自然序；[失效] 前缀不参与排序。 */
+/** 显示名比较：英文/数字在前，中文按拼音、数字按自然序；失败原因前缀不参与排序。 */
 export function compareLiveChannelName(a: string, b: string): number {
   const x = stripFailedPrefix(a);
   const y = stripFailedPrefix(b);
@@ -355,8 +356,8 @@ export function sortLiveGroupChannels<T extends { name: string }>(
     list.sort((a, b) => compareLiveChannelName(a.name, b.name));
   }
   if (options?.failedLast) {
-    const ok = list.filter((c) => !/^\[失效\]/.test(c.name));
-    const failed = list.filter((c) => /^\[失效\]/.test(c.name));
+    const ok = list.filter((c) => !isFailedChannelName(c.name));
+    const failed = list.filter((c) => isFailedChannelName(c.name));
     list = ok.concat(failed);
   }
   return list;

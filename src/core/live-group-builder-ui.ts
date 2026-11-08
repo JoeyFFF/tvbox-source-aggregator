@@ -108,6 +108,16 @@ ${sharedStyles}
 .sort-line select{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:5px;padding:4px 6px;font-size:10px}
 .sort-line label{display:flex;align-items:center;gap:4px;color:var(--text-dim);font-size:9px;cursor:pointer}
 .sort-line input[type=checkbox]{accent-color:var(--green);cursor:pointer}
+.rename-row{display:flex;gap:4px;align-items:center;margin-top:4px}
+.rename-row input[type=text]{flex:1;min-width:0;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:5px;padding:4px 6px;font-size:10px;outline:none}
+.rename-row input[type=text]:focus{border-color:var(--green)}
+.rename-row input[type=checkbox]{accent-color:var(--green);cursor:pointer;flex:none}
+.rename-row .rn-arrow{color:var(--text-dim);font-size:10px;flex:none}
+.rename-row button{padding:1px 5px;font-size:10px;flex:none}
+.rename-row button:disabled{opacity:.35;cursor:default}
+.rename-empty{color:var(--text-dim);font-size:9px;padding:2px 0}
+.rename-hint{color:var(--text-dim);font-size:9px;margin-top:5px;line-height:1.45;word-break:break-all}
+.rename-hint.bad{color:var(--red)}
 </style>
 </head>
 <body style="opacity:0">
@@ -208,6 +218,12 @@ ${sharedStyles}
       <div class="pane-head"><span class="dot" style="background:var(--blue);box-shadow:0 0 10px var(--blue)"></span><h2>整理分组 / 频道</h2><span class="count" id="targetCount"></span></div>
       <div class="pane-body">
         <div class="sort-box">
+          <span class="sort-label">频道名重命名（按顺序执行，支持 $1；留空=删除匹配）</span>
+          <div id="renameList"></div>
+          <button class="btn sm ghost" style="margin-top:5px" onclick="addRename()">+ 添加重命名</button>
+          <div class="rename-hint" id="renameHint"></div>
+        </div>
+        <div class="sort-box">
           <span class="sort-label">组顺序（逗号分隔；未列出的组排在后面）</span>
           <input type="text" id="groupOrderInput" placeholder="例如：央视,卫视,境内地方,港澳台" oninput="markDirty()">
           <div class="sort-line">
@@ -235,6 +251,8 @@ var TOKEN = '';
 var SNAPSHOT = null;
 var SNAPSHOT_ERROR = '';
 var RULES = [];
+var RENAMES = [];
+var INSERT_AFTER_ID = null;
 var PREVIEW = null;
 var PREVIEW_DIRTY = true;
 var PREVIEW_AT = 0;
@@ -300,8 +318,101 @@ function sortForSave() {
   return {
     groupOrder: order,
     channelSort: document.getElementById('channelSortSelect').value === 'name' ? 'name' : 'default',
-    failedLast: document.getElementById('failedLastCheck').checked
+    failedLast: document.getElementById('failedLastCheck').checked,
+    renames: renamesForSave()
   };
+}
+function renamesForSave() {
+  return RENAMES.map(function(r) {
+    return { id: r.id, enabled: r.enabled !== false, pattern: r.pattern || '', replacement: r.replacement || '' };
+  });
+}
+function renderRenames() {
+  var box = document.getElementById('renameList');
+  if (!box) return;
+  if (!RENAMES.length) {
+    box.innerHTML = '<div class="rename-empty">还没有重命名规则</div>';
+  } else {
+    var html = '';
+    for (var i = 0; i < RENAMES.length; i++) {
+      var r = RENAMES[i];
+      html += '<div class="rename-row">' +
+        '<input type="checkbox" title="启用" ' + (r.enabled !== false ? 'checked' : '') + ' onchange="setRenameEnabled(' + i + ',this.checked)">' +
+        '<input type="text" value="' + esc(r.pattern || '') + '" placeholder="正则，如 ^(CCTV-\\\\d+)\\\\s+.*$" oninput="setRenamePattern(' + i + ',this.value)">' +
+        '<button class="btn sm ghost" title="删除" onclick="deleteRename(' + i + ')">×</button>' +
+        '</div>' +
+        '<div class="rename-row">' +
+        '<span class="rn-arrow">→</span>' +
+        '<input type="text" value="' + esc(r.replacement || '') + '" placeholder="$1（留空=删除匹配部分）" oninput="setRenameReplacement(' + i + ',this.value)">' +
+        '<button class="btn sm ghost" title="上移" ' + (i === 0 ? 'disabled' : '') + ' onclick="moveRename(' + i + ',-1)">↑</button>' +
+        '<button class="btn sm ghost" title="下移" ' + (i === RENAMES.length - 1 ? 'disabled' : '') + ' onclick="moveRename(' + i + ',1)">↓</button>' +
+        '</div>';
+    }
+    box.innerHTML = html;
+  }
+  updateRenameHint();
+}
+function addRename() {
+  RENAMES.push({ id: 'rn' + Date.now(), enabled: true, pattern: '', replacement: '' });
+  markDirty(); renderRenames();
+  var inputs = document.querySelectorAll('#renameList input[type=text]');
+  if (inputs.length) inputs[inputs.length - 2].focus();
+}
+function deleteRename(i) {
+  RENAMES.splice(i, 1);
+  markDirty(); renderRenames();
+}
+function moveRename(i, delta) {
+  var to = i + delta;
+  if (to < 0 || to >= RENAMES.length) return;
+  var moved = RENAMES.splice(i, 1)[0];
+  RENAMES.splice(to, 0, moved);
+  markDirty(); renderRenames();
+}
+function setRenameEnabled(i, on) { if (!RENAMES[i]) return; RENAMES[i].enabled = on; markDirty(); updateRenameHint(); }
+function setRenamePattern(i, v) { if (!RENAMES[i]) return; RENAMES[i].pattern = v; markDirty(); updateRenameHint(); }
+function setRenameReplacement(i, v) { if (!RENAMES[i]) return; RENAMES[i].replacement = v; markDirty(); updateRenameHint(); }
+function applyRenameRules(name) {
+  var s = name;
+  for (var i = 0; i < RENAMES.length; i++) {
+    var r = RENAMES[i];
+    if (r.enabled === false || !r.pattern) continue;
+    var re = safeRe(r.pattern);
+    if (!re) continue;
+    s = s.replace(re, r.replacement || '');
+  }
+  s = s.trim();
+  return s || name;
+}
+function renameError() {
+  for (var i = 0; i < RENAMES.length; i++) {
+    var r = RENAMES[i];
+    if (r.enabled === false) continue;
+    if (!r.pattern || !safeRe(r.pattern)) return '第 ' + (i + 1) + ' 条重命名正则不合法或为空';
+  }
+  return '';
+}
+function updateRenameHint() {
+  var el = document.getElementById('renameHint');
+  if (!el) return;
+  var bad = renameError();
+  if (bad) { el.className = 'rename-hint bad'; el.textContent = bad; return; }
+  el.className = 'rename-hint';
+  if (!RENAMES.length) {
+    el.textContent = '例：^(CCTV-\\\\d+)\\\\s+.*$ → $1，把 CCTV-1 综合 改为 CCTV-1';
+    return;
+  }
+  if (!SNAPSHOT) { el.textContent = '快照加载后可显示示例'; return; }
+  var example = '';
+  SNAPSHOT.groups.forEach(function(g) {
+    if (example) return;
+    (g.channels || []).forEach(function(c) {
+      if (example) return;
+      var out = applyRenameRules(c);
+      if (out !== c) example = c + ' → ' + out;
+    });
+  });
+  el.textContent = example ? '示例：' + example : '当前快照中没有可演示的重命名';
 }
 function targetLabel(t) { return t === '__filter__' ? '已过滤' : t; }
 function formatTime(ts) { if (!ts) return '—'; try { return new Date(ts).toLocaleString(); } catch (e) { return String(ts); } }
@@ -338,6 +449,9 @@ async function loadAll() {
     if (!rulesRes.ok) { setStatus('规则加载失败 HTTP ' + rulesRes.status); return; }
     var rs = await rulesRes.json();
     RULES = (rs.rules || []).slice().sort(function(a, b) { return (b.priority || 0) - (a.priority || 0); });
+    RENAMES = Array.isArray(rs.renames) ? rs.renames.map(function(r) {
+      return { id: r.id, enabled: r.enabled !== false, pattern: r.pattern || '', replacement: r.replacement || '' };
+    }) : [];
     SORT = {
       groupOrder: Array.isArray(rs.groupOrder) ? rs.groupOrder : [],
       channelSort: rs.channelSort === 'name' ? 'name' : 'default',
@@ -363,6 +477,7 @@ function renderAll() {
   renderStats();
   renderSources();
   renderRules();
+  renderRenames();
   renderPreview();
 }
 
@@ -435,7 +550,7 @@ function renderSources() {
     }
     html += '<div class="tree-group' + (open ? ' open' : '') + '">' +
       '<div class="group-row' + (SELECTED_SOURCE === g.group ? ' active' : '') + '" onclick="toggleSource(\\'' + js(g.group) + '\\')">' +
-      '<span class="caret">▶</span><span class="g-name">' + esc(g.group) + '</span><span class="g-count">' + g.count.toLocaleString() + '</span></div>' +
+      '<span class="caret">▶</span><span class="g-name">' + esc(g.group) + '</span><span class="g-count" title="频道=去重频道名，源=原始条目">频道 ' + (g.channels || []).length.toLocaleString() + ' · 源 ' + g.count.toLocaleString() + '</span></div>' +
       '<div class="g-targets">' + chips + '</div>' +
       (open ? '<div class="ch-list">' + channels + '</div>' : '') +
       '</div>';
@@ -451,15 +566,29 @@ function toggleSource(group) {
 }
 function showMoreSource() { SOURCE_LIMIT += 50; renderSources(); }
 function js(s) { return String(s == null ? '' : s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"); }
+function findRuleIndex(id) {
+  if (!id) return -1;
+  for (var i = 0; i < RULES.length; i++) if (RULES[i].id === id) return i;
+  return -1;
+}
+function beginNewRule() {
+  INSERT_AFTER_ID = SELECTED_RULE >= 0 && RULES[SELECTED_RULE] ? RULES[SELECTED_RULE].id : null;
+  SELECTED_RULE = -1;
+  PICKED_CHANNEL = '';
+}
+function insertOrderLabel() {
+  var i = findRuleIndex(INSERT_AFTER_ID);
+  return i >= 0 ? '插入第 ' + (i + 2) + ' 位' : '—';
+}
 function pickChannel(group, channel) {
+  beginNewRule();
   PICKED_CHANNEL = channel;
   SELECTED_SOURCE = group;
-  SELECTED_RULE = -1;
   document.getElementById('fGroup').value = '^' + reEsc(group) + '$';
   document.getElementById('fChannel').value = '^' + reEsc(channel) + '$';
   setTargetValue('__default__');
   document.getElementById('fPrefix').value = '';
-  document.getElementById('fOrder').value = '—';
+  document.getElementById('fOrder').value = insertOrderLabel();
   document.getElementById('detailState').textContent = '新建规则';
   updateMatchInfo();
   renderSources();
@@ -512,6 +641,7 @@ function onDrop(event, to) {
 }
 function onDragEnd(event) { event.currentTarget.classList.remove('dragging'); DRAG_INDEX = null; }
 function selectRule(i) {
+  INSERT_AFTER_ID = null;
   SELECTED_RULE = i;
   var r = RULES[i];
   if (!r) return;
@@ -525,12 +655,12 @@ function selectRule(i) {
   renderRules(); renderSources(); updateMatchInfo();
 }
 function newRule() {
-  SELECTED_RULE = -1; PICKED_CHANNEL = '';
+  beginNewRule();
   document.getElementById('fGroup').value = '';
   document.getElementById('fChannel').value = '';
   setTargetValue('__default__');
   document.getElementById('fPrefix').value = '';
-  document.getElementById('fOrder').value = '—';
+  document.getElementById('fOrder').value = insertOrderLabel();
   document.getElementById('detailState').textContent = '';
   updateMatchInfo(); renderRules(); renderSources();
 }
@@ -588,8 +718,20 @@ function saveRuleDraft() {
     prefix: document.getElementById('fPrefix').value,
     priority: 0
   };
-  if (SELECTED_RULE >= 0 && RULES[SELECTED_RULE]) RULES[SELECTED_RULE] = rule;
-  else { RULES.push(rule); SELECTED_RULE = RULES.length - 1; }
+  if (SELECTED_RULE >= 0 && RULES[SELECTED_RULE]) {
+    RULES[SELECTED_RULE] = rule;
+    INSERT_AFTER_ID = null;
+  } else {
+    var insertAt = findRuleIndex(INSERT_AFTER_ID);
+    if (insertAt >= 0) {
+      RULES.splice(insertAt + 1, 0, rule);
+      SELECTED_RULE = insertAt + 1;
+    } else {
+      RULES.push(rule);
+      SELECTED_RULE = RULES.length - 1;
+    }
+    INSERT_AFTER_ID = null;
+  }
   markDirty(); renderRules(); selectRule(SELECTED_RULE);
   setStatus('规则已加入草稿；保存后 refresh 生效');
 }
@@ -654,6 +796,8 @@ function showMoreTarget() { TARGET_LIMIT += 100; renderPreview(); }
 
 /* ── 预览 / 保存 / 刷新 ───────────────────────────── */
 async function doPreview() {
+  var rerr = renameError();
+  if (rerr) { setStatus(rerr); return; }
   setStatus('预览中...');
   try {
     var res = await api('/admin/live-group-preview', {
@@ -671,6 +815,8 @@ async function doPreview() {
   } catch (e) { setStatus('预览失败: ' + e.message); }
 }
 async function saveRules() {
+  var rerr = renameError();
+  if (rerr) { setStatus(rerr); return false; }
   setStatus('保存中...');
   try {
     var res = await api('/admin/live-group-rules', {
@@ -734,8 +880,10 @@ async function importRules(input) {
     var data = JSON.parse(text);
     if (!data || typeof data !== 'object' || !Array.isArray(data.rules)) throw new Error('缺少 rules 数组');
     var importedUseBuiltin = false;
+    var importedRenames = Array.isArray(data.renames) ? data.renames : [];
     var imported = {
       rules: data.rules,
+      renames: importedRenames,
       filterTargets: [],
       useBuiltin: importedUseBuiltin,
       groupOrder: Array.isArray(data.groupOrder) ? data.groupOrder : [],
@@ -745,9 +893,12 @@ async function importRules(input) {
     var check = await api('/admin/live-group-preview', { method: 'POST', body: imported });
     var err = await check.json().catch(function() { return {}; });
     if (!check.ok) { setStatus('导入校验失败: ' + (err.error || check.status)); input.value = ''; return; }
-    if (!confirm('导入 ' + imported.rules.length + ' 条规则、' + imported.filterTargets.length + ' 个整组过滤，将覆盖当前草稿，继续？')) { input.value = ''; return; }
-    LAST_IMPORT_BACKUP = { rules: clone(RULES), sort: clone(SORT) };
+    if (!confirm('导入 ' + imported.rules.length + ' 条规则、' + importedRenames.length + ' 条重命名，将覆盖当前草稿，继续？')) { input.value = ''; return; }
+    LAST_IMPORT_BACKUP = { rules: clone(RULES), renames: clone(RENAMES), sort: clone(SORT) };
     RULES = imported.rules.slice().sort(function(a, b) { return (b.priority || 0) - (a.priority || 0); });
+    RENAMES = importedRenames.map(function(r, idx) {
+      return { id: r.id || ('rn' + Date.now() + '_' + idx), enabled: r.enabled !== false, pattern: r.pattern || '', replacement: r.replacement || '' };
+    });
     SORT = { groupOrder: imported.groupOrder, channelSort: imported.channelSort, failedLast: imported.failedLast };
     syncSortControls();
     SELECTED_RULE = -1; PREVIEW = null; PREVIEW_DIRTY = true;
@@ -763,6 +914,7 @@ async function importRules(input) {
 function undoImport() {
   if (!LAST_IMPORT_BACKUP) return;
   RULES = clone(LAST_IMPORT_BACKUP.rules);
+  if (LAST_IMPORT_BACKUP.renames) RENAMES = clone(LAST_IMPORT_BACKUP.renames);
   if (LAST_IMPORT_BACKUP.sort) { SORT = clone(LAST_IMPORT_BACKUP.sort); syncSortControls(); }
   LAST_IMPORT_BACKUP = null;
   document.getElementById('undoImport').style.display = 'none';

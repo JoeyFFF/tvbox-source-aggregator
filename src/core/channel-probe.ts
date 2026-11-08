@@ -2,7 +2,7 @@
 // 独立模块：不阻塞主聚合，失败不影响聚合产出
 
 import type { Storage } from '../storage/interface';
-import type { TVBoxLiveGroup, ChannelSpeedMap, ChannelProbeStatus } from './types';
+import type { TVBoxLiveGroup, ChannelSpeedMap, ChannelProbeStatus, ChannelFailReason } from './types';
 import {
   KV_CHANNEL_SPEED_MAP,
   KV_CHANNEL_PROBE_STATUS,
@@ -15,6 +15,7 @@ import {
 } from './config';
 import { extractAllUrls } from './live-merger';
 import { cleanPlaybackUrl } from './live-mirrors';
+import { applyProbeResult, isLongTermFailed, isPermanentProbeFailure, shouldProbeEntry } from './channel-health';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -67,13 +68,14 @@ async function saveSpeedMap(storage: Storage, map: ChannelSpeedMap): Promise<voi
   await storage.put(KV_CHANNEL_SPEED_MAP, JSON.stringify(map));
 }
 
-/** 清理 7 天前的测速缓存 */
-export function pruneExpired(map: ChannelSpeedMap): ChannelSpeedMap {
+/** 清理 7 天前的测速缓存；当前频道树中仍在使用的失败历史保留，避免丢失长期判定。 */
+export function pruneExpired(map: ChannelSpeedMap, activeUrls?: Set<string>): ChannelSpeedMap {
   const now = Date.now();
   const out: ChannelSpeedMap = {};
   for (const [url, entry] of Object.entries(map)) {
     const ts = Date.parse(entry.probedAt);
-    if (isFinite(ts) && now - ts < CHANNEL_SPEED_TTL_MS) {
+    const active = !activeUrls || activeUrls.has(url);
+    if ((isFinite(ts) && now - ts < CHANNEL_SPEED_TTL_MS) || (active && entry.kind === 'fail')) {
       out[url] = entry;
     }
   }
@@ -86,6 +88,39 @@ interface ProbeResult {
   url: string;
   speedMs: number;
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
+  reason?: ChannelFailReason;
+}
+
+function httpFailureReason(status: number): ChannelFailReason {
+  if (status === 401) return 'http-401';
+  if (status === 403) return 'http-403';
+  if (status === 404) return 'http-404';
+  if (status === 408) return 'http-408';
+  if (status === 410) return 'http-410';
+  if (status === 429) return 'http-429';
+  if (status >= 500) return 'http-5xx';
+  if (status >= 400) return 'http-4xx';
+  return 'unknown';
+}
+
+function fetchFailureReason(err: unknown, timedOut: boolean): ChannelFailReason {
+  if (timedOut) return 'timeout';
+  const e = err as { name?: string; code?: string; cause?: { code?: string }; message?: string } | undefined;
+  const code = String(e?.cause?.code || e?.code || '');
+  const message = String(e?.message || '');
+  if (code === 'ENOTFOUND' || /getaddrinfo ENOTFOUND/i.test(message)) return 'dns-not-found';
+  if (code === 'EAI_AGAIN' || /getaddrinfo EAI_AGAIN/i.test(message)) return 'dns-temporary';
+  if (code === 'ERR_INVALID_URL' || /Invalid URL/i.test(message)) return 'invalid-url';
+  if (code === 'ECONNREFUSED') return 'connection-refused';
+  if (
+    code === 'ECONNRESET'
+    || code === 'EPIPE'
+    || code === 'UND_ERR_SOCKET'
+    || /other side closed|socket hang up|connection reset/i.test(message)
+  ) return 'connection-reset';
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || /timed out|timeout/i.test(message)) return 'timeout';
+  if (e?.name === 'AbortError') return 'timeout';
+  return 'network';
 }
 
 async function probeSingle(url: string): Promise<ProbeResult> {
@@ -93,7 +128,11 @@ async function probeSingle(url: string): Promise<ProbeResult> {
   const isTs = /\.(ts|flv|mp4)(\?|$)/i.test(url);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CHANNEL_PROBE_TIMEOUT_MS);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, CHANNEL_PROBE_TIMEOUT_MS);
   const start = Date.now();
 
   try {
@@ -105,7 +144,7 @@ async function probeSingle(url: string): Promise<ProbeResult> {
 
     if (!resp.ok) {
       clearTimeout(timer);
-      return { url, speedMs: 0, kind: 'fail' };
+      return { url, speedMs: 0, kind: 'fail', reason: httpFailureReason(resp.status) };
     }
 
     const reader = resp.body?.getReader();
@@ -126,7 +165,7 @@ async function probeSingle(url: string): Promise<ProbeResult> {
         if (head.includes('#EXTM3U')) {
           return { url, speedMs: ttfb, kind: 'm3u8' };
         }
-        return { url, speedMs: 0, kind: 'fail' };
+        return { url, speedMs: 0, kind: 'fail', reason: 'invalid-media' };
       }
 
       if (isTs) {
@@ -145,9 +184,9 @@ async function probeSingle(url: string): Promise<ProbeResult> {
     } finally {
       reader.cancel().catch(() => {});
     }
-  } catch {
+  } catch (err) {
     clearTimeout(timer);
-    return { url, speedMs: 0, kind: 'fail' };
+    return { url, speedMs: 0, kind: 'fail', reason: fetchFailureReason(err, timedOut) };
   }
 }
 
@@ -274,13 +313,23 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
   console.log(`[channel-probe] Started: ${urls.length} URLs, ${totalChannels} channels, concurrency=${CHANNEL_PROBE_CONCURRENCY}`);
 
   try {
-    // 先读旧缓存，复用未过期条目（减少重复测试）
-    const oldMap = pruneExpired(await loadSpeedMap(storage));
+    // 成功缓存沿用 7 天；失败条目按 24 小时重试，长期失败每 7 天复核。
+    const probeNow = Date.now();
+    const oldMap = pruneExpired(await loadSpeedMap(storage), new Set(urls));
     const fresh: ChannelSpeedMap = { ...oldMap };
-
-    // 只测缓存里没有的 URL
-    const toProbe = urls.filter((u) => !fresh[u]);
-    console.log(`[channel-probe] ${toProbe.length} new URLs to probe (${urls.length - toProbe.length} cached)`);
+    const toProbe = urls.filter((u) => shouldProbeEntry(fresh[u], probeNow));
+    const toProbeSet = new Set(toProbe);
+    let cachedSuccess = 0;
+    let cachedFail = 0;
+    for (const u of urls) {
+      if (toProbeSet.has(u)) continue;
+      if (fresh[u]?.kind === 'fail') cachedFail++;
+      else cachedSuccess++;
+    }
+    console.log(
+      `[channel-probe] ${toProbe.length} URLs to probe ` +
+      `(${cachedSuccess} cached success, ${cachedFail} cached fail)`,
+    );
 
     const results = await runWithConcurrency(
       toProbe,
@@ -297,18 +346,24 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
 
     const now = new Date().toISOString();
     for (const r of results) {
-      fresh[r.url] = {
-        speedMs: r.speedMs,
-        probedAt: now,
-        kind: r.kind,
-      };
+      fresh[r.url] = applyProbeResult(fresh[r.url], r, now);
       if (r.kind === 'fail') failed++;
       else success++;
     }
 
-    // 算上缓存命中的成功数（不重复测但视为 success）
-    const cachedSuccess = urls.length - toProbe.length;
+    // 缓存命中也要计入真实成功/失败，不能把旧失败伪装成 success。
     success += cachedSuccess;
+    failed += cachedFail;
+
+    const permanentFailedUrls = urls.filter((u) => isPermanentProbeFailure(fresh[u])).length;
+    const longTermFailedUrls = urls.filter(
+      (u) => !isPermanentProbeFailure(fresh[u]) && isLongTermFailed(fresh[u]),
+    ).length;
+    const shortTermFailedUrls = urls.filter(
+      (u) => fresh[u]?.kind === 'fail'
+        && !isPermanentProbeFailure(fresh[u])
+        && !isLongTermFailed(fresh[u]),
+    ).length;
 
     await saveSpeedMap(storage, fresh);
 
@@ -326,12 +381,16 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
       failed,
       totalChannels,
       coverage,
+      permanentFailedUrls,
+      longTermFailedUrls,
+      shortTermFailedUrls,
     };
     await saveStatus(storage, finalStatus);
 
     console.log(
       `[channel-probe] Done in ${(durationMs / 1000).toFixed(1)}s: ` +
-      `${success} success, ${failed} failed, coverage=${coverage}%`,
+      `${success} success, ${failed} failed, ${permanentFailedUrls} permanent, ` +
+      `${longTermFailedUrls} long-term, ${shortTermFailedUrls} short-term, coverage=${coverage}%`,
     );
 
     return finalStatus;

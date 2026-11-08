@@ -103,3 +103,10 @@ export const CHANNEL_PROBE_CONCURRENCY = 50;
 export const CHANNEL_PROBE_TIMEOUT_MS = 5000;
 // 缓存过期（7 天）
 export const CHANNEL_SPEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// 短期失败的复测间隔：失败条目每天重测，成功条目继续沿用 7 天缓存
+export const CHANNEL_FAIL_RETRY_MS = 24 * 60 * 60 * 1000;
+// 长期失效：连续失败至少 3 次，且首次失败已持续 7 天
+export const CHANNEL_LONG_TERM_FAIL_MS = 7 * 24 * 60 * 60 * 1000;
+export const CHANNEL_LONG_TERM_MIN_FAILS = 3;
+// 已判长期失效的 URL 每 7 天做一次恢复复测
+export const CHANNEL_LONG_TERM_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;

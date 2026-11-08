@@ -253,11 +253,34 @@ export interface AggregationLog {
 
 // ═══ 直播频道级测速（方案 D+）══════════════════════════
 
+export type ChannelFailReason =
+  | 'dns-not-found'      // 域名不存在，确定性失败
+  | 'dns-temporary'      // DNS 临时失败，仍可重试
+  | 'timeout'
+  | 'connection-refused'
+  | 'connection-reset'
+  | 'network'
+  | 'http-401'
+  | 'http-403'
+  | 'http-404'           // 资源不存在，确定性失败
+  | 'http-410'           // 资源已删除，确定性失败
+  | 'http-408'           // 请求超时，短期
+  | 'http-429'           // 限流，短期
+  | 'http-4xx'
+  | 'http-5xx'
+  | 'invalid-url'        // URL 本身非法，确定性失败
+  | 'invalid-media'
+  | 'unknown';
+
 // URL → 延迟 ms 的映射（持久化到 KV_CHANNEL_SPEED_MAP）
 export interface ChannelSpeedEntry {
   speedMs: number;          // TTFB 或连通耗时
   probedAt: string;         // ISO 时间
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
+  firstFailAt?: string;     // 本轮连续失败首次发生时间
+  lastOkAt?: string;        // 最近一次成功时间
+  consecutiveFails?: number; // 连续失败次数
+  lastFailReason?: ChannelFailReason; // 最近一次失败原因
 }
 export type ChannelSpeedMap = Record<string, ChannelSpeedEntry>;
 
@@ -294,5 +317,8 @@ export interface ChannelProbeStatus {
   failed: number;            // 超时/失败
   totalChannels: number;     // 合并后频道数
   coverage: number;          // 覆盖率（success/totalUrls，百分比）
+  permanentFailedUrls?: number; // DNS不存在/404/410等确定性失败，输出时直接过滤
+  longTermFailedUrls?: number; // 连续失败≥3次且持续≥7天，输出时直接过滤
+  shortTermFailedUrls?: number; // 当前失败但未达长期阈值，按标准探活失败保留
   error?: string;
 }

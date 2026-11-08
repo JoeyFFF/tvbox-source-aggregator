@@ -25,6 +25,7 @@ import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, fetchAndParseLiveUrls } from './core/live-merger';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
+import { mountChannelOrderRoutes } from './routes/channel-order-admin';
 
 export interface AppDeps {
   storage: Storage;
@@ -1846,6 +1847,7 @@ export function createApp(deps: AppDeps): Hono {
   // 频道级测速 admin 路由（仅 Node/Docker 启用）
   if (deps.enableChannelProbe) {
     mountChannelProbeRoutes(app, { storage, config, triggerRefresh: deps.triggerRefresh });
+    mountChannelOrderRoutes(app, { storage, config, triggerRefresh: deps.triggerRefresh });
   }
 
   // Builder 路由（仅 Node/Docker 启用，动态 import 避免 CF bundle 引入 fs/path）

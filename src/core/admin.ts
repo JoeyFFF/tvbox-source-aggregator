@@ -425,6 +425,26 @@ ${sharedStyles}
         分离模式：每个直播源独立展示，用「源名」前缀区分。合并模式：所有源的频道按名称去重合并为统一列表。
       </div>
     </div>
+
+    <!-- Channel Order -->
+    <div class="section" id="channelOrderSection">
+      <div class="section-title" data-i18n="channelOrderTitle">频道排序</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn btn-sm btn-primary" onclick="smartSortChannels()" data-i18n="channelOrderSmart">一键智能排序（央视）</button>
+        <button class="btn btn-sm" onclick="saveChannelOrder()" data-i18n="channelOrderSave">保存排序</button>
+        <button class="btn btn-sm" onclick="resetChannelOrder()" data-i18n="channelOrderReset">恢复默认</button>
+        <span class="status-text" id="channelOrderStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="display:flex;gap:12px;align-items:stretch;flex-wrap:wrap">
+        <div id="channelOrderGroups" style="flex:0 0 160px;max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div>
+        <div style="flex:1;min-width:280px">
+          <div id="channelOrderHint" style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="channelOrderHint">
+            拖动频道调整顺序，第一位就是电视上显示的第一个。
+          </div>
+          <div id="channelOrderList" style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Search Quota Tab -->
@@ -754,6 +774,20 @@ const translations = {
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 2h)',
+    channelOrderTitle:'Channel Order',
+    channelOrderSmart:'Smart sort (CCTV)',
+    channelOrderSave:'Save order',
+    channelOrderReset:'Reset',
+    channelOrderHint:'Drag to reorder. The first item is what the TV shows first.',
+    channelOrderEmpty:'No channels. Run aggregation first.',
+    channelOrderNeedRefresh:'Run aggregation first',
+    channelOrderDirty:'Unsaved changes',
+    channelOrderSaved:'Order saved',
+    channelOrderSorting:'Sorting...',
+    channelOrderSmartDone:'Sorted {kept} channels, moved out {moved}',
+    channelOrderMoved:'Moved to 其他: {list}',
+    channelOrderResetConfirm:'Clear custom channel order and moves?',
+    channelOrderResetDone:'Reset done',
     channelProbeTrigger:'Run Now',
     channelProbeDropDead:'Clean Dead Sources',
     channelProbeRestoreDead:'Restore',
@@ -839,6 +873,20 @@ const translations = {
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 2 小时）',
+    channelOrderTitle:'频道排序',
+    channelOrderSmart:'一键智能排序（央视）',
+    channelOrderSave:'保存排序',
+    channelOrderReset:'恢复默认',
+    channelOrderHint:'拖动频道调整顺序，第一位就是电视上显示的第一个。',
+    channelOrderEmpty:'暂无频道，请先执行一次聚合',
+    channelOrderNeedRefresh:'请先执行一次聚合',
+    channelOrderDirty:'有未保存的调整',
+    channelOrderSaved:'排序已保存',
+    channelOrderSorting:'排序中...',
+    channelOrderSmartDone:'已排序 {kept} 个频道，移出 {moved} 个',
+    channelOrderMoved:'已移到「其他」：{list}',
+    channelOrderResetConfirm:'清空自定义排序与移出规则？',
+    channelOrderResetDone:'已恢复默认',
     channelProbeTrigger:'立即执行',
     channelProbeDropDead:'清理死源',
     channelProbeRestoreDead:'恢复死源',
@@ -1508,6 +1556,161 @@ async function restoreDeadSources() {
   } catch {
     toast(t('networkError'), 'error');
   }
+}
+
+
+// --- Channel Order (频道排序) ---
+let channelOrderData = null;
+let channelOrderCurrent = null;
+let channelOrderDraft = {};
+let channelOrderDragIndex = -1;
+
+async function loadChannelOrder() {
+  const list = $('channelOrderList');
+  if (!list) return;
+  try {
+    const res = await auth.authFetch('/admin/channel-order');
+    if (!res.ok) {
+      list.textContent = t('channelOrderNeedRefresh');
+      list.style.cssText += ';color:var(--text-secondary);font-size:.85rem';
+      return;
+    }
+    channelOrderData = await res.json();
+    channelOrderDraft = {};
+    (channelOrderData.groups || []).forEach(function (g) {
+      channelOrderDraft[g.group] = g.channels.map(function (c) { return c.name; });
+    });
+    if (!channelOrderCurrent || !channelOrderDraft[channelOrderCurrent]) {
+      channelOrderCurrent = (channelOrderData.groups && channelOrderData.groups[0]) ? channelOrderData.groups[0].group : null;
+    }
+    renderChannelOrderGroups();
+    renderChannelOrderList();
+  } catch (e) {
+    list.textContent = t('networkError');
+  }
+}
+
+function renderChannelOrderGroups() {
+  const box = $('channelOrderGroups');
+  if (!box || !channelOrderData) return;
+  box.innerHTML = '';
+  (channelOrderData.groups || []).forEach(function (g) {
+    const row = document.createElement('div');
+    const active = g.group === channelOrderCurrent;
+    row.style.cssText = 'padding:6px 8px;border-radius:6px;cursor:pointer;font-size:.85rem;display:flex;justify-content:space-between;align-items:center;' +
+      (active ? 'background:var(--accent,#378ADD);color:#fff;' : '');
+    const nameEl = document.createElement('span');
+    nameEl.textContent = g.group;
+    const countEl = document.createElement('span');
+    countEl.textContent = String(g.count || 0);
+    countEl.style.cssText = 'opacity:.7;font-size:.75rem';
+    row.appendChild(nameEl);
+    row.appendChild(countEl);
+    row.addEventListener('click', function () {
+      channelOrderCurrent = g.group;
+      renderChannelOrderGroups();
+      renderChannelOrderList();
+    });
+    box.appendChild(row);
+  });
+}
+
+function renderChannelOrderList() {
+  const box = $('channelOrderList');
+  if (!box) return;
+  box.innerHTML = '';
+
+  const names = channelOrderCurrent ? (channelOrderDraft[channelOrderCurrent] || []) : [];
+  if (names.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = t('channelOrderEmpty');
+    empty.style.cssText = 'color:var(--text-secondary);font-size:.85rem';
+    box.appendChild(empty);
+    return;
+  }
+
+  const src = (channelOrderData.groups || []).find(function (g) { return g.group === channelOrderCurrent; });
+  const urlCount = {};
+  if (src) src.channels.forEach(function (c) { urlCount[c.name] = c.urls; });
+
+  names.forEach(function (name, i) {
+    const row = document.createElement('div');
+    row.draggable = true;
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border);font-size:.85rem;cursor:grab';
+
+    const left = document.createElement('span');
+    const idxEl = document.createElement('span');
+    idxEl.textContent = String(i + 1);
+    idxEl.style.cssText = 'color:var(--text-secondary);font-family:var(--mono);font-size:.75rem;margin-right:8px';
+    left.appendChild(idxEl);
+    left.appendChild(document.createTextNode(name));
+
+    const right = document.createElement('span');
+    right.textContent = (urlCount[name] != null) ? urlCount[name] + ' 源' : '';
+    right.style.cssText = 'color:var(--text-secondary);font-size:.72rem';
+
+    row.appendChild(left);
+    row.appendChild(right);
+
+    row.addEventListener('dragstart', function () { channelOrderDragIndex = i; });
+    row.addEventListener('dragover', function (e) { e.preventDefault(); });
+    row.addEventListener('drop', function (e) {
+      e.preventDefault();
+      if (!channelOrderCurrent || channelOrderDragIndex < 0 || channelOrderDragIndex === i) return;
+      const arr = channelOrderDraft[channelOrderCurrent];
+      const moved = arr.splice(channelOrderDragIndex, 1)[0];
+      arr.splice(i, 0, moved);
+      channelOrderDragIndex = -1;
+      renderChannelOrderList();
+      setChannelOrderStatus(t('channelOrderDirty'), false);
+    });
+    row.addEventListener('dragend', function () { channelOrderDragIndex = -1; });
+
+    box.appendChild(row);
+  });
+}
+
+function setChannelOrderStatus(msg, ok) {
+  const el = $('channelOrderStatus');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = ok ? 'var(--success,#1D9E75)' : 'var(--text-secondary)';
+}
+
+async function saveChannelOrder() {
+  try {
+    const res = await auth.authFetch('/admin/channel-order', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groups: channelOrderDraft })
+    });
+    if (res.ok) { setChannelOrderStatus(t('channelOrderSaved'), true); toast(t('channelOrderSaved')); }
+    else { setChannelOrderStatus('保存失败', false); }
+  } catch { setChannelOrderStatus(t('networkError'), false); }
+}
+
+async function smartSortChannels() {
+  setChannelOrderStatus(t('channelOrderSorting'), false);
+  try {
+    const res = await auth.authFetch('/admin/channel-order/smart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await res.json();
+    if (res.ok) {
+      const moved = (d.movedOut || []).length;
+      setChannelOrderStatus(t('channelOrderSmartDone').replace('{kept}', d.kept || 0).replace('{moved}', moved), true);
+      if (moved) toast(t('channelOrderMoved').replace('{list}', d.movedOut.join('、')));
+      setTimeout(() => { loadChannelOrder(); loadLiveMergeMode(); }, 1500);
+    } else {
+      setChannelOrderStatus(d.error || 'Failed', false);
+    }
+  } catch { setChannelOrderStatus(t('networkError'), false); }
+}
+
+async function resetChannelOrder() {
+  if (!confirm(t('channelOrderResetConfirm'))) return;
+  try {
+    const res = await auth.authFetch('/admin/channel-order', { method: 'DELETE' });
+    if (res.ok) { setChannelOrderStatus(t('channelOrderResetDone'), true); setTimeout(loadChannelOrder, 1200); }
+  } catch { setChannelOrderStatus(t('networkError'), false); }
 }
 
 // --- Edge Proxies ---
@@ -2264,6 +2467,7 @@ async function saveAutoClean() {
 // ─── Init new settings ───────
 loadLiveDisabled();
 loadLiveMergeMode();
+loadChannelOrder();
 loadSmartBaseUrl();
 loadProbeDepth();
 loadAutoClean();

@@ -426,6 +426,24 @@ ${sharedStyles}
       </div>
     </div>
 
+    <!-- Live Group Merge -->
+    <div class="section" id="liveGroupMergeSection">
+      <div class="section-title" data-i18n="groupMergeTitle">分组归并</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="groupMergeEnabled" onchange="saveLiveGroups()">
+          <span data-i18n="groupMergeEnable">启用分组归并（把各源的杂组收进标准分组）</span>
+        </label>
+        <button class="btn btn-sm" onclick="saveLiveGroups()" data-i18n="channelOrderSave">保存排序</button>
+        <button class="btn btn-sm" onclick="resetLiveGroups()" data-i18n="groupMergeReset">恢复默认规则</button>
+        <span class="status-text" id="groupMergeStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="groupMergeHint">
+        每行一条「关键词=目标分组」，按顺序匹配，认不出的归入「其他」。只影响分组归属，不影响频道合并与测速排序。
+      </div>
+      <textarea id="groupMergeRules" spellcheck="false" style="width:100%;height:170px;font-family:var(--mono);font-size:0.78rem;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);resize:vertical"></textarea>
+    </div>
+
     <!-- Channel Order -->
     <div class="section" id="channelOrderSection">
       <div class="section-title" data-i18n="channelOrderTitle">频道排序</div>
@@ -687,6 +705,14 @@ ${sharedStyles}
         </label>
         <span class="status-text" id="autoCleanStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="keepLinkCheck" onchange="saveKeepLink()">
+          <span data-i18n="keepLinkLabel">保留链接（不删除站点，仅跳过后续探测）</span>
+        </label>
+        <button class="btn btn-sm" onclick="clearSkipList()" data-i18n="clearSkipBtn">清空跳过名单</button>
+        <span class="status-text" id="keepLinkStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-dim)" data-i18n="siteProbeDesc">Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.</div>
     </div>
   </div>
@@ -774,6 +800,13 @@ const translations = {
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 2h)',
+    groupMergeTitle:'Group Merge',
+    groupMergeEnable:'Merge messy groups into standard ones',
+    groupMergeReset:'Reset rules',
+    groupMergeHint:'One "keyword=target" per line, first match wins; unmatched go to 其他. Only affects grouping, not channel merging or speed sorting.',
+    groupMergeSaved:'Saved',
+    groupMergeResetConfirm:'Reset group merge rules to defaults?',
+    groupMergeResetDone:'Defaults restored',
     channelOrderTitle:'Channel Order',
     channelOrderSmart:'Smart sort (CCTV)',
     channelOrderSave:'Save order',
@@ -805,6 +838,11 @@ const translations = {
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
     liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
+    keepLinkLabel:'Keep links (do not delete; just skip probing them later)',
+    clearSkipBtn:'Clear skip list',
+    skipCount:'Skipping {n} sites',
+    clearSkipConfirm:'Clear the skip list? Skipped sites will be probed again.',
+    clearSkipDone:'Skip list cleared',
     siteProbeTitle:'Site Probe & Auto Clean', probeDepthLabel:'Probe depth:',
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
@@ -873,6 +911,13 @@ const translations = {
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 2 小时）',
+    groupMergeTitle:'分组归并',
+    groupMergeEnable:'启用分组归并（把各源的杂组收进标准分组）',
+    groupMergeReset:'恢复默认规则',
+    groupMergeHint:'每行一条「关键词=目标分组」，按顺序匹配，认不出的归入「其他」。只影响分组归属，不影响频道合并与测速排序。',
+    groupMergeSaved:'已保存',
+    groupMergeResetConfirm:'恢复默认的分组归并规则？',
+    groupMergeResetDone:'已恢复默认',
     channelOrderTitle:'频道排序',
     channelOrderSmart:'一键智能排序（央视）',
     channelOrderSave:'保存排序',
@@ -904,6 +949,11 @@ const translations = {
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
     liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
+    keepLinkLabel:'保留链接（不删除站点，仅跳过后续探测）',
+    clearSkipBtn:'清空跳过名单',
+    skipCount:'正在跳过 {n} 个站点',
+    clearSkipConfirm:'清空跳过名单？这些站点会重新参与探测',
+    clearSkipDone:'跳过名单已清空',
     siteProbeTitle:'站点验活与自动清理', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
@@ -1561,6 +1611,99 @@ async function restoreDeadSources() {
   }
 }
 
+
+// --- Live Group Merge (分组归并) ---
+let liveGroupData = null;
+
+async function loadLiveGroups() {
+  const box = $('groupMergeRules');
+  if (!box) return;
+  try {
+    const res = await auth.authFetch('/admin/live-groups');
+    if (!res.ok) return;
+    liveGroupData = await res.json();
+    $('groupMergeEnabled').checked = !!liveGroupData.enabled;
+    box.value = (liveGroupData.rules || []).map(function (r) { return r.keyword + '=' + r.target; }).join('\\n');
+  } catch (e) { /* ignore */ }
+}
+
+async function saveLiveGroups() {
+  const box = $('groupMergeRules');
+  const rules = box.value.split('\\n').map(function (line) {
+    const i = line.indexOf('=');
+    if (i <= 0) return null;
+    return { keyword: line.slice(0, i).trim(), target: line.slice(i + 1).trim() };
+  }).filter(function (r) { return r && r.keyword && r.target; });
+
+  const st = $('groupMergeStatus');
+  try {
+    const res = await auth.authFetch('/admin/live-groups', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('groupMergeEnabled').checked, rules: rules })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      st.textContent = t('groupMergeSaved') + ' (' + d.rules + ' 条规则)';
+      st.style.color = 'var(--success,#1D9E75)';
+      setTimeout(function () { loadChannelOrder(); }, 1200);
+    } else {
+      st.textContent = d.error || 'Failed';
+      st.style.color = 'var(--danger,#A32D2D)';
+    }
+  } catch (e) {
+    st.textContent = t('networkError');
+  }
+}
+
+async function resetLiveGroups() {
+  if (!confirm(t('groupMergeResetConfirm'))) return;
+  try {
+    const res = await auth.authFetch('/admin/live-groups/reset', { method: 'POST' });
+    if (res.ok) {
+      $('groupMergeStatus').textContent = t('groupMergeResetDone');
+      setTimeout(loadLiveGroups, 1200);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// --- 站点跳过名单（保留链接模式） ---
+async function loadKeepLink() {
+  try {
+    const res = await auth.authFetch('/admin/site-keep-link');
+    if (!res.ok) return;
+    const d = await res.json();
+    const cb = $('keepLinkCheck');
+    if (cb) cb.checked = !!d.enabled;
+    const st = $('keepLinkStatus');
+    if (st) st.textContent = d.skipped > 0 ? t('skipCount').replace('{n}', d.skipped) : '';
+  } catch (e) { /* ignore */ }
+}
+
+async function saveKeepLink() {
+  try {
+    const res = await auth.authFetch('/admin/site-keep-link', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('keepLinkCheck').checked })
+    });
+    if (res.ok) {
+      $('keepLinkStatus').textContent = t('saved');
+      setTimeout(loadKeepLink, 1200);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function clearSkipList() {
+  if (!confirm(t('clearSkipConfirm'))) return;
+  try {
+    const res = await auth.authFetch('/admin/site-keep-link', { method: 'DELETE' });
+    if (res.ok) {
+      $('keepLinkStatus').textContent = t('clearSkipDone');
+      setTimeout(loadKeepLink, 1200);
+    }
+  } catch (e) { /* ignore */ }
+}
 
 // --- Channel Order (频道排序) ---
 let channelOrderData = null;
@@ -2470,10 +2613,12 @@ async function saveAutoClean() {
 // ─── Init new settings ───────
 loadLiveDisabled();
 loadLiveMergeMode();
+loadLiveGroups();
 loadChannelOrder();
 loadSmartBaseUrl();
 loadProbeDepth();
 loadAutoClean();
+loadKeepLink();
 
 applyTheme(getTheme());
 initThemeDropdown();

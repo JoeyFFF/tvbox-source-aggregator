@@ -26,6 +26,7 @@ import { formatLiveGroupsAsTxt, fetchAndParseLiveUrls } from './core/live-merger
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { mountChannelOrderRoutes } from './routes/channel-order-admin';
+import { loadSkipList, clearSkipList } from './core/site-skip';
 
 export interface AppDeps {
   storage: Storage;
@@ -1840,6 +1841,26 @@ export function createApp(deps: AppDeps): Hono {
     const body = await c.req.json<{ enabled: boolean }>();
     await storage.put(KV_SITE_AUTO_CLEAN, body.enabled ? 'true' : 'false');
     return c.json({ success: true, enabled: body.enabled });
+  });
+
+  // 「保留链接」开关 + 跳过名单管理
+  app.get('/admin/site-keep-link', async (c) => {
+    const raw = await storage.get('site_keep_link');
+    const skip = await loadSkipList(storage);
+    return c.json({ enabled: raw === 'true', skipped: skip.length });
+  });
+
+  app.put('/admin/site-keep-link', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const body = await c.req.json<{ enabled: boolean }>();
+    await storage.put('site_keep_link', body.enabled ? 'true' : 'false');
+    return c.json({ success: true, enabled: body.enabled });
+  });
+
+  app.delete('/admin/site-keep-link', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    await clearSkipList(storage);
+    return c.json({ success: true });
   });
 
   app.get('/admin/site-health', async (c) => {

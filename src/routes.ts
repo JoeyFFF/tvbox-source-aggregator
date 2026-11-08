@@ -137,6 +137,11 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── 纯直播配置 ────────────────────────────────────────
+  // /live.txt 与 /live-config 同源：有些直播壳只认 .txt 后缀，给个同名别名
+  app.get('/live.txt', async (c) => {
+    return c.redirect('/live-config', 302);
+  });
+
   app.get('/live-config', async (c) => {
     let cached = await storage.get(KV_MERGED_CONFIG);
 

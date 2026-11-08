@@ -30,7 +30,7 @@ export interface LiveUrlBlacklistTarget {
   group?: string;
 }
 
-const MAX_RULES = 500;
+const MAX_RULES = 2000;
 const MAX_NOTE_LENGTH = 200;
 const EMPTY: LiveUrlBlacklistRuleSet = { version: 1, rules: [] };
 

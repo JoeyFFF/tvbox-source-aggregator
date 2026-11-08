@@ -111,7 +111,7 @@ ${sharedStyles}
       <div class="field"><label>统一备注（可选）</label><input id="batchNote" maxlength="200" placeholder="批量导入"></div>
       <button class="btn sm secondary" onclick="batchImport()">批量追加</button>
     </div>
-    <p class="hint">批量追加不会清空现有规则；最多 500 条。导入前建议先测试一条代表性正则。</p>
+    <p class="hint">批量追加不会清空现有规则；最多 2000 条。导入前建议先测试一条代表性正则。</p>
   </div>
 </div>
 

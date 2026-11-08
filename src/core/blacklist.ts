@@ -49,12 +49,12 @@ export async function saveBlacklist(storage: Storage, blacklist: Blacklist): Pro
 
 // ─── 正则规则验证 ────────────────────────────────────────
 
-const MAX_PATTERN_LENGTH = 200;
+const MAX_PATTERN_LENGTH = 700;
 const NESTED_QUANTIFIER_RE = /\([^)]*[+*{][^)]*\)[+*{]/;
 
 export function validateRegexRule(pattern: string): { ok: boolean; error?: string } {
   if (!pattern) return { ok: false, error: 'Pattern is empty' };
-  if (pattern.length > MAX_PATTERN_LENGTH) return { ok: false, error: 'Pattern too long (max 200)' };
+  if (pattern.length > MAX_PATTERN_LENGTH) return { ok: false, error: 'Pattern too long (max 700)' };
   if (NESTED_QUANTIFIER_RE.test(pattern)) return { ok: false, error: 'Nested quantifier detected (ReDoS risk)' };
   try {
     new RegExp(pattern);
